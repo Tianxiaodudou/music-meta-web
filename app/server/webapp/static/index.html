@@ -700,6 +700,11 @@ async function exportAutoOk(){
 
 // ---------------- 待人工页面 ----------------
 async function loadPending(){
+  // 手动搜索输入框正在输入时跳过列表重绘：
+  // 页面每 5 秒轮询会重建待人工卡片 DOM，若此刻替换正在输入的输入框，
+  // 焦点/光标会被重置（表现为输入指针自动跳走）。等用户离开输入框后再刷新。
+  const _ae = document.activeElement;
+  if(_ae && (_ae.id||"").startsWith("ms-")) return;
   const st = pageState.pending, per = 100;
   const d = await api(`/api/pending?limit=${per}&offset=${st.page*per}`);
   pendingData = d.items;
