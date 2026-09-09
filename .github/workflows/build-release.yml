@@ -66,21 +66,36 @@ jobs:
           echo "artifact: music-meta-web-${VER}.fpk"
           ls -la "music-meta-web-${VER}.fpk"
 
+      - name: Prepare release body from CHANGELOG
+        run: |
+          VER="${{ steps.version.outputs.version }}"
+          {
+            echo "## music-meta-web v${VER}"
+            echo ""
+            echo "fnOS 原生应用「音乐数据刮削」安装包（GPL-3.0）。由 GitHub Actions 在线使用官方 fnpack 编译并自动发布。"
+            echo ""
+            echo "### 安装"
+            echo "下载本 Release 的 \`music-meta-web-${VER}.fpk\`，在飞牛 fnOS 应用中心 →「手动安装」中选择该文件即可。"
+            echo ""
+            echo "### 更新日志"
+            echo ""
+            # 从 CHANGELOG.md 提取当前版本段落（## [x.y.z] - date 到下一个 ## [ 之前）
+            # 用 index 字符串匹配，避免版本号被 awk 当作正则字符类
+            awk -v sec="## [${VER}]" '
+              index($0, sec)==1 {on=1; next}
+              on && index($0, "## [")==1 {exit}
+              on {print}
+            ' CHANGELOG.md
+          } > "$RUNNER_TEMP/body.md"
+          echo "---- 生成的 Release 正文 ----"
+          cat "$RUNNER_TEMP/body.md"
+
       - name: Publish Release
         uses: softprops/action-gh-release@v2
         with:
           name: "music-meta-web v${{ steps.version.outputs.version }}"
           tag_name: "v${{ steps.version.outputs.version }}"
-          body: |
-            ## music-meta-web v${{ steps.version.outputs.version }}
-
-            fnOS 原生应用「音乐数据刮削」安装包（GPL-3.0）。
-
-            ### 安装
-            下载本 Release 的 `music-meta-web-${{ steps.version.outputs.version }}.fpk`，
-            在飞牛 fnOS 应用中心 →「手动安装」中选择该文件即可。
-
-            > 由 GitHub Actions 在线使用官方 fnpack 编译并自动发布。
+          body_path: "${{ runner.temp }}/body.md"
           files: |
             music-meta-web-${{ steps.version.outputs.version }}.fpk
           fail_on_unmatched_files: true
