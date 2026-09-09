@@ -2,6 +2,12 @@
 
 本项目所有值得记录的变更都会列在此文件。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
+## [1.3.4] - 2026-09-09
+
+### 变更
+- 捐赠区块文案补充：作者自述「完全不会写应用/编译，全靠花钱烧 token 请 AI 完成」。
+- 捐赠区块附上 GitHub 仓库地址（github.com/Tianxiaodudou/music-meta-web），邀请所有用户前往仓库完善、改进、提 issue / PR（GPL-3.0 开源）。
+
 ## [1.3.3] - 2026-09-09
 
 ### 新增
