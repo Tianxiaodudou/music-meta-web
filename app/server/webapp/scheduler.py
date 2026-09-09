@@ -496,26 +496,54 @@ class Scraper(threading.Thread):
                 return
         else:
             # 文件名模式：遍历所有选中源，合并候选（每源前 N 条，N 由配置 source_limit 决定）
+            from musicmeta.filenames import reverse_candidates
             plimit = max(1, int(cfg.get("source_limit", "10")))
             fdur = _file_duration(path)
-            seen: Set[tuple] = set()
+            metas: List[SongMeta] = []
             err_count = 0
-            for src in sources:
-                try:
-                    for cand in parse_candidates(os.path.basename(path)):
-                        # 应用层统一缓存：同一首歌只请求一次服务器
-                        for meta in search_cached(src, cand.title, cand.artist,
-                                                  limit=plimit):
-                            key = (src.name, meta.song_id)
-                            if meta.song_id and key not in seen:
-                                seen.add(key)
-                                # 重新打分：时长接近 + 标题/歌手与文件名匹配优先
-                                meta.confidence = _rescore(meta, cand.title, cand.artist, fdur)
-                                metas.append(meta)
-                except Exception as exc:  # noqa: BLE001
-                    err_count += 1
-                    print(f"[scheduler] 源 {getattr(src, 'name', '?')} 搜索异常: {exc}")
-        metas.sort(key=lambda m: m.confidence, reverse=True)
+
+            # 按 (源, song_id) 保留分数最高的候选：
+            # 正序/反序两轮可能返回同一首歌，必须让高分版本胜出（而非先到先得）。
+            best_map: dict = {}
+
+            def _collect(cands) -> None:
+                """对一组 (title, artist) 候选跨所有选中源搜索并打分，就地并入 metas。"""
+                nonlocal err_count
+                round_seen: Set[tuple] = set()   # 仅本轮内去重防重复请求
+                for src in sources:
+                    try:
+                        for cand in cands:
+                            # 应用层统一缓存：同一首歌只请求一次服务器
+                            for meta in search_cached(src, cand.title, cand.artist,
+                                                      limit=plimit):
+                                key = (src.name, meta.song_id)
+                                if meta.song_id and key not in round_seen:
+                                    round_seen.add(key)
+                                    # 重新打分：时长接近 + 标题/歌手与文件名匹配优先
+                                    meta.confidence = _rescore(meta, cand.title,
+                                                               cand.artist, fdur)
+                                    prev = best_map.get(key)
+                                    if prev is None or meta.confidence > prev.confidence:
+                                        best_map[key] = meta
+                    except Exception as exc:  # noqa: BLE001
+                        err_count += 1
+                        print(f"[scheduler] 源 {getattr(src, 'name', '?')} 搜索异常: {exc}")
+
+            base_cands = parse_candidates(os.path.basename(path))
+            _collect(base_cands)
+            # 文件名方向兜底：若文件名其实是「歌手-歌名」（如「周杰伦-晴天」），
+            # 正向解析的 title/artist 是反的，搜索结果难以达标。
+            # 仅当正向结果中没有达到阈值的高分候选时，用反序候选补搜一轮，
+            # 避免普通「歌名-歌手」文件产生双倍在线请求。
+            need_rev = (not best_map) or max(
+                (m.confidence for m in best_map.values()), default=0.0) \
+                < float(cfg.get("threshold", "0.9")) * 100.0
+            if need_rev:
+                rev = reverse_candidates(base_cands)
+                if rev:
+                    _collect(rev)
+            metas = list(best_map.values())
+            metas.sort(key=lambda m: m.confidence, reverse=True)
 
         if not metas:
             # 区分「搜索失败（网络/超时/源异常，重试可能成功）」与「真无匹配」

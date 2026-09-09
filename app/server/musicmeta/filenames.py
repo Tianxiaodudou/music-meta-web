@@ -19,6 +19,21 @@ SUPPORTED_EXTS = {".flac", ".mp3", ".ogg", ".ape"}
 _TRACK_PREFIX_RE = re.compile(r"^\s*(\d{1,3})\s*[.\-_、]\s*")
 _MAX_SPLITS = 3  # 最多尝试从最后 1..N 个 '-' 处切分
 
+# 归一化分隔符：文件里的全角/半角常见分隔统一成 '-' 再切分
+# （覆盖 "歌名 - 歌手"、"歌名_歌手"、"歌名–歌手"、"歌名—歌手"、"歌名｜歌手"）
+# 注意：不归一空格/冒号 —— 英文歌名常含空格，专辑副标题常含冒号，误切风险大。
+_SEP_NORM = {
+    "\u2013": "-",   # – EN DASH
+    "\u2014": "-",   # — EM DASH
+    "\u2015": "-",   # ― HORIZONTAL BAR
+    "\u2212": "-",   # − MINUS SIGN
+    "_": "-",
+    "\uff3f": "-",   # ＿ FULLWIDTH LOW LINE
+    "｜": "-",
+    "|": "-",
+    "　": " ",       # 全角空格 -> 半角
+}
+
 
 @dataclass
 class ParsedName:
@@ -40,6 +55,14 @@ def split_ext(filename: str) -> Tuple[str, str]:
     return name[:idx], name[idx:].lower()
 
 
+def normalize_separators(stem: str) -> str:
+    """把常见全角/半角分隔统一成 '-'（见 _SEP_NORM）。不做空格/冒号归一。"""
+    out = []
+    for ch in stem:
+        out.append(_SEP_NORM.get(ch, ch))
+    return "".join(out)
+
+
 def strip_track_prefix(stem: str) -> Tuple[str, str]:
     """去掉开头曲目号：'01. 晴天-周杰伦' -> ('01', '晴天-周杰伦')。"""
     m = _TRACK_PREFIX_RE.match(stem)
@@ -54,6 +77,7 @@ def dash_splits(stem: str, max_splits: int = _MAX_SPLITS) -> List[Tuple[str, str
     例: 'Dragostea Din Tei-O-Zone'
         -> [('Dragostea Din Tei-O', 'Zone'), ('Dragostea Din Tei', 'O-Zone')]
     """
+    stem = normalize_separators(stem)
     parts = [p.strip() for p in stem.split("-")]
     if len(parts) < 2:
         return [(stem, "")]
@@ -66,6 +90,21 @@ def dash_splits(stem: str, max_splits: int = _MAX_SPLITS) -> List[Tuple[str, str
             out.append((title, artist))
     if not out:
         out.append((stem, ""))
+    return out
+
+
+def reverse_candidates(cands: List[ParsedName]) -> List[ParsedName]:
+    """把候选按「歌手-歌名」反序再生成一组（用于文件名方向相反时兜底）。
+
+    如文件名是「周杰伦-晴天」（歌手-歌名），正向解析成
+    (title=周杰伦, artist=晴天) 是错的；反序候选给 (title=晴天, artist=周杰伦)。
+    仅对 artist 非空的候选生成，交换 title/artist。
+    """
+    out: List[ParsedName] = []
+    for c in cands:
+        if c.artist and c.title and c.artist != c.title:
+            out.append(ParsedName(stem=c.stem, title=c.artist, artist=c.title,
+                                  ext=c.ext, track_hint=c.track_hint))
     return out
 
 

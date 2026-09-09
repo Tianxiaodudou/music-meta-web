@@ -659,11 +659,20 @@ async function loadPending(){
   const box = $("pending");
   if(!pendingData.length){ box.innerHTML = '<div class="empty">当前没有待人工决策的文件</div>'; return; }
   box.innerHTML = "";
-  for(const t of pendingData){
+  for(const [i,t] of pendingData.entries()){
     const div = document.createElement("div");
     div.className = "card";
     div.style.marginBottom = "10px";
-    div.innerHTML = `<div><b>${esc(t.name)}</b> <span class="muted">${esc(cnErr(t.error||""))}</span> <button class="secondary" style="margin-left:8px" onclick="renameFile('${esc(t.path).replace(/'/g,"\\'")}')">重命名</button></div>`;
+    div.innerHTML = `<div><b>${esc(t.name)}</b> <span class="muted">${esc(cnErr(t.error||""))}</span>` +
+      `<button class="secondary" style="margin-left:8px" onclick="renameFile('${esc(t.path).replace(/'/g,"\\'")}')">重命名</button>` +
+      `<button class="secondary" style="margin-left:6px" onclick="toggleManualSearch(${i})" title="文件名识别不对时，手动输入歌名/歌手重新搜索">✎ 手动搜索</button></div>` +
+      `<div id="ms-${i}" style="display:none;margin-top:6px;background:var(--bg2,#f4f6f8);border:1px dashed var(--line,#ccc);border-radius:6px;padding:8px;gap:6px">` +
+        `<div style="margin-bottom:4px" class="muted">文件名不是「歌名-歌手」格式或识别不对？手动输入正确的歌名与歌手搜索：</div>` +
+        `<input id="ms-t-${i}" placeholder="歌名（必填）" style="width:32%;min-width:140px;padding:5px 8px;border:1px solid #ccc;border-radius:4px" value="${esc(autoTitleHint(t.name))}">` +
+        `<input id="ms-a-${i}" placeholder="歌手（可留空）" style="width:26%;min-width:120px;padding:5px 8px;border:1px solid #ccc;border-radius:4px" value="${esc(autoArtistHint(t.name))}">` +
+        `<button class="ok" onclick="manualSearch(${i})">按输入搜索</button>` +
+        `<button class="secondary" onclick="toggleManualSearch(${i})">收起</button>` +
+      `</div>`;
     for(const c of (t.candidates||[])){
       const card = document.createElement("div");
       card.className = "cand";
@@ -703,6 +712,30 @@ async function loadPending(){
     div.appendChild(btns);
     box.appendChild(div);
   }
+}
+
+// 手动搜索：文件名不是「歌名-歌手」格式 / 识别不对时，手动输入歌名(歌手)搜索
+function stemOf(name){
+  const s = String(name||"").replace(/\.[^.]+$/, "").replace(/^\s*\d{1,3}\s*[.\-_、]\s*/, "").trim();
+  return s;
+}
+function autoTitleHint(name){ return stemOf(name); }   // 预填：去掉扩展名与曲目号后的完整名
+function autoArtistHint(name){ return ""; }            // 歌手不猜，避免误导（可能反序）
+function toggleManualSearch(i){
+  const el = $("ms-"+i);
+  if(el) el.style.display = (el.style.display === "none" ? "block" : "none");
+}
+async function manualSearch(i){
+  const t = pendingData[i]; if(!t) return;
+  const title = ($("ms-t-"+i)||{}).value?.trim() || "";
+  const artist = ($("ms-a-"+i)||{}).value?.trim() || "";
+  if(!title && !artist){ msg("请至少输入歌名"); return; }
+  try{
+    const r = await api("/api/manual-search", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({file: t.path, title, artist})});
+    msg(`手动搜索完成：找到 ${r.count||0} 条候选（可在下方选用，或继续调整关键词重搜）`);
+    loadPending(); loadStats();
+  }catch(e){ msg("搜索失败：" + (e.message||e)); }
 }
 
 async function renameFile(file){

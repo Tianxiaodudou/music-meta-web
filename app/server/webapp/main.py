@@ -754,6 +754,48 @@ def decide_batch(body: BatchDecideBody):
     return {"mode": body.mode, "done": done, "chosen": chosen, "skipped": skipped}
 
 
+def _search_by_words(file: str, words: list, cfg: dict, force_live: bool = False,
+                     use_cache: bool = True) -> list:
+    """按一组 (title, artist) 关键词跨全部选中源搜索候选并打分（共享逻辑）。
+
+    words: [(title, artist), ...]；通常来自文件名解析或用户手动输入。
+    force_live: 跳过缓存强制在线（重新搜索/手动搜索用）。
+    use_cache=False 时仍走 search_cached（其内部缓存），此参数预留。
+    返回按 confidence 降序的 SongMeta 列表（未写库）。
+    """
+    from musicmeta.sources.registry import get_source
+    names = [n.strip() for n in cfg.get("source", "").split(",") if n.strip()]
+    plimit = max(1, int(cfg.get("source_limit", "10")))
+    fdur = scheduler._file_duration(file)
+    # 按 (源, song_id) 保留分数最高的候选（正序/反序可能命中同一首歌，
+    # 让高分版本胜出，而非先到先得——否则反序高分会被正序低分占坑丢弃）。
+    best_map: dict = {}
+    for name in names:
+        try:
+            src = get_source(name, min_interval=float(cfg.get("min_interval", "0.3")))
+            for title, artist in words:
+                # round_seen 只防「同一关键词」内重复请求；
+                # 不同关键词命中同一首歌时，由 best_map 保留高分版本，
+                # 否则正序轮先占坑会拦截反序轮同歌的高分命中。
+                round_seen = set()
+                for meta in scheduler.search_cached(src, title, artist,
+                                                    limit=plimit,
+                                                    force_live=force_live):
+                    key = (name, meta.song_id)
+                    if meta.song_id and key not in round_seen:
+                        round_seen.add(key)
+                        meta.confidence = scheduler._rescore(
+                            meta, title, artist, fdur)
+                        prev = best_map.get(key)
+                        if prev is None or meta.confidence > prev.confidence:
+                            best_map[key] = meta
+        except Exception:
+            continue
+    metas = list(best_map.values())
+    metas.sort(key=lambda m: m.confidence, reverse=True)
+    return metas
+
+
 @app.get("/api/refresh/{file:path}")
 def refresh_candidates(file: str):
     """对单个文件重新搜索候选（使用全部选中源，合并显示）。
@@ -765,30 +807,17 @@ def refresh_candidates(file: str):
     if not os.path.isfile(file):
         raise HTTPException(400, f"文件不存在: {file}")
     cfg = db.get_config()
-    from musicmeta.sources.registry import get_source
-    names = [n.strip() for n in cfg.get("source", "").split(",") if n.strip()]
-    from musicmeta.filenames import parse_candidates
-    plimit = max(1, int(cfg.get("source_limit", "10")))
-    fdur = scheduler._file_duration(file)
-    seen = set()
-    metas = []
-    for name in names:
-        try:
-            src = get_source(name, min_interval=float(cfg.get("min_interval", "0.3")))
-            for cand in parse_candidates(os.path.basename(file)):
-                # 人工队列单首重新搜索：跳过缓存，强制在线拉取最新结果
-                for meta in scheduler.search_cached(src, cand.title, cand.artist,
-                                                    limit=plimit, force_live=True):
-                    key = (name, meta.song_id)
-                    if meta.song_id and key not in seen:
-                        seen.add(key)
-                        # 与自动刮削同一套打分：时长接近 + 标题/歌手匹配
-                        meta.confidence = scheduler._rescore(
-                            meta, cand.title, cand.artist, fdur)
-                        metas.append(meta)
-        except Exception:
-            continue
-    metas.sort(key=lambda m: m.confidence, reverse=True)
+    from musicmeta.filenames import parse_candidates, reverse_candidates
+    cands = parse_candidates(os.path.basename(file))
+    words = [(c.title, c.artist) for c in cands]
+    metas = _search_by_words(file, words, cfg, force_live=True)
+    # 文件名方向兜底：正向结果没有达标候选时，用反序候选补搜一轮
+    # （reverse_candidates 已交换 title/artist，直接取其 title/artist）
+    if not any(m.confidence >= float(cfg.get("threshold", "0.9")) * 100.0
+               for m in metas):
+        rev = [(c.title, c.artist) for c in reverse_candidates(cands)]
+        if rev:
+            metas = _search_by_words(file, words + rev, cfg, force_live=True)
     db.add_candidates(file, [scheduler._meta_to_dict(m) for m in metas])
 
     auto_written = False
@@ -828,6 +857,32 @@ def refresh_candidates(file: str):
                     _invalidate_filter_cache(file)
     return {"candidates": db.get_candidates(file), "auto_written": auto_written,
             "write_error": write_error}
+
+
+class ManualSearchBody(BaseModel):
+    file: str
+    title: str = ""
+    artist: str = ""
+
+
+@app.post("/api/manual-search")
+def manual_search(body: ManualSearchBody):
+    """手动搜索：文件名格式不对/识别不出时，用户输入歌名(可选歌手)跨源搜索。
+
+    只更新候选列表并返回，不自动写入 —— 结果由用户在人工辅助队列里选用。
+    """
+    file = (body.file or "").strip()
+    title = (body.title or "").strip()
+    artist = (body.artist or "").strip()
+    if not os.path.isfile(file):
+        raise HTTPException(400, f"文件不存在: {file}")
+    if not title and not artist:
+        raise HTTPException(400, "请至少输入歌名")
+    cfg = db.get_config()
+    metas = _search_by_words(file, [(title, artist)], cfg, force_live=True)
+    db.add_candidates(file, [scheduler._meta_to_dict(m) for m in metas])
+    return {"candidates": db.get_candidates(file), "count": len(metas),
+            "title": title, "artist": artist}
 
 
 @app.get("/api/lyrics/{songmid}")
