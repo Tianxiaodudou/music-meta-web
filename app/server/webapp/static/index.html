@@ -711,13 +711,14 @@ async function loadPending(){
     const div = document.createElement("div");
     div.className = "card";
     div.style.marginBottom = "10px";
+    const msSt = manualState[t.path] || {open:false, title:"", artist:""};
     div.innerHTML = `<div><b>${esc(t.name)}</b> <span class="muted">${esc(cnErr(t.error||""))}</span>` +
       `<button class="secondary" style="margin-left:8px" onclick="renameFile('${esc(t.path).replace(/'/g,"\\'")}')">重命名</button>` +
       `<button class="secondary" style="margin-left:6px" onclick="toggleManualSearch(${i})" title="文件名识别不对时，手动输入歌名/歌手重新搜索">✎ 手动搜索</button></div>` +
-      `<div id="ms-${i}" style="display:none;margin-top:6px;background:var(--bg2,#f4f6f8);border:1px dashed var(--line,#ccc);border-radius:6px;padding:8px;gap:6px">` +
+      `<div id="ms-${i}" style="display:${msSt.open?"block":"none"};margin-top:6px;background:var(--bg2,#f4f6f8);border:1px dashed var(--line,#ccc);border-radius:6px;padding:8px;gap:6px">` +
         `<div style="margin-bottom:4px" class="muted">文件名不是「歌名-歌手」格式或识别不对？手动输入正确的歌名与歌手搜索：</div>` +
-        `<input id="ms-t-${i}" placeholder="歌名（必填）" style="width:32%;min-width:140px;padding:5px 8px;border:1px solid #ccc;border-radius:4px" value="${esc(autoTitleHint(t.name))}">` +
-        `<input id="ms-a-${i}" placeholder="歌手（可留空）" style="width:26%;min-width:120px;padding:5px 8px;border:1px solid #ccc;border-radius:4px" value="${esc(autoArtistHint(t.name))}">` +
+        `<input id="ms-t-${i}" placeholder="歌名（必填）" style="width:32%;min-width:140px;padding:5px 8px;border:1px solid #ccc;border-radius:4px" value="${esc(msSt.title || autoTitleHint(t.name))}" oninput="msSaveInput(${i})">` +
+        `<input id="ms-a-${i}" placeholder="歌手（可留空）" style="width:26%;min-width:120px;padding:5px 8px;border:1px solid #ccc;border-radius:4px" value="${esc(msSt.artist || autoArtistHint(t.name))}" oninput="msSaveInput(${i})">` +
         `<button class="ok" onclick="manualSearch(${i})">按输入搜索</button>` +
         `<button class="secondary" onclick="toggleManualSearch(${i})">收起</button>` +
       `</div>`;
@@ -769,9 +770,27 @@ function stemOf(name){
 }
 function autoTitleHint(name){ return stemOf(name); }   // 预填：去掉扩展名与曲目号后的完整名
 function autoArtistHint(name){ return ""; }            // 歌手不猜，避免误导（可能反序）
+
+// 手动搜索面板状态：页面每 5 秒轮询会重建待人工列表 DOM，
+// 若不保存展开/输入状态，重绘后面板会被重置为收起（表现为"点开自己就没了"）。
+// key=文件路径, value={open:bool, title:string, artist:string}
+const manualState = {};
+
+function msGet(i){
+  const t = pendingData[i]; if(!t) return null;
+  if(!manualState[t.path]) manualState[t.path] = {open:false, title:"", artist:""};
+  return manualState[t.path];
+}
 function toggleManualSearch(i){
+  const st = msGet(i); if(!st) return;
+  st.open = !st.open;                 // 记录展开状态（loadPending 重绘后据此恢复）
   const el = $("ms-"+i);
-  if(el) el.style.display = (el.style.display === "none" ? "block" : "none");
+  if(el) el.style.display = st.open ? "block" : "none";
+}
+function msSaveInput(i){               // 输入时同步保存，重绘不丢内容
+  const st = msGet(i); if(!st) return;
+  st.title = ($("ms-t-"+i)||{}).value || "";
+  st.artist = ($("ms-a-"+i)||{}).value || "";
 }
 async function manualSearch(i){
   const t = pendingData[i]; if(!t) return;
@@ -782,6 +801,7 @@ async function manualSearch(i){
     const r = await api("/api/manual-search", {method:"POST", headers:{"Content-Type":"application/json"},
       body: JSON.stringify({file: t.path, title, artist})});
     msg(`手动搜索完成：找到 ${r.count||0} 条候选（可在下方选用，或继续调整关键词重搜）`);
+    // 搜索后保留面板展开与已输入内容，便于继续微调；仅刷新候选
     loadPending(); loadStats();
   }catch(e){ msg("搜索失败：" + (e.message||e)); }
 }
