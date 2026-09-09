@@ -11,6 +11,19 @@ fnOS 原生应用，为本地音乐库批量补齐元数据的专业工具。支
 - **多数据源插件化**：QQ 音乐 / 网易云 / 酷狗 / 酷我 / LRC Lib / TheAudioDB / iTunes 等数据源即插即用，内置全局限速与随机间隔防止风控，同曲目本地缓存零重复请求。
 - **数据安全**：支持真实写入开关（默认仅学习预览）、目录级写保护与中文错误提示，任务与标签可随时复核、移回或删除。
 
+## 数据源插件
+
+本应用安装包**不内置任何数据源**，所有数据源均为单文件插件（`.py`），按需下载、复制即用、随用随换。
+
+- **下载**：本仓库 [data-source-plugins/](data-source-plugins/) 目录即为全部官方插件源码，也可从每个 [GitHub Release](https://github.com/Tianxiaodudou/music-meta-web/releases) 的源码附件中获取。常用插件：
+  `qqmusic.py`（QQ 音乐，含音频指纹）、`netease.py`（网易云）、`kugou.py`（酷狗）、`kuwo.py`（酷我）、`lrclib.py`（LRC Lib 歌词）、`theaudiodb.py`（TheAudioDB 欧美/日韩）、`itunes.py`（iTunes 示例）。
+- **使用三步**：
+  1. 下载需要的 `.py`，复制到应用的**插件目录**（打开应用 → 配置页可查看/修改，默认是应用数据目录 `plugins/`）；
+  2. 在 fnOS 应用中心**重启**本应用；
+  3. 回到应用配置页勾选数据源即可（可多选，候选自动合并，每源最多 10 条）。
+
+> 每个文件都是独立单文件插件，可单独复制，全部**免配置**（无需注册、无需密钥，qqmusic 的音频指纹识别需自行申请 AcoustID Key）。欢迎任何人改进插件或开发新数据源并提交 PR。
+
 ## 版本更新日志
 
 各版本变更见 [CHANGELOG.md](CHANGELOG.md)；每个 GitHub Release 也附有对应版本的更新日志。
