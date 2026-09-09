@@ -1,0 +1,8 @@
+{
+    "defaults":
+    {
+        "run-as": "package"
+    },
+    "username": "musicmeta",
+    "groupname": "musicmeta"
+}

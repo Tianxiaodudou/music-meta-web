@@ -1,0 +1,18 @@
+#!/bin/bash
+
+### This script is called after the user uninstalls the application.
+### 卸载向导 wizard_delete_data=true 时清除应用数据目录（配置/候选/插件），
+### 否则保留数据（音乐文件永远不受影响）。
+
+VAR_DIR="${TRIM_PKGVAR:-/var/apps/music-meta-web/var}"
+
+if [ "${wizard_delete_data:-false}" = "true" ]; then
+    # 停止应用（若仍在运行）并删除数据目录
+    "$(dirname "$0")/main" stop >/dev/null 2>&1
+    sleep 1
+    if [ -d "${VAR_DIR}" ]; then
+        rm -rf "${VAR_DIR}"
+    fi
+fi
+
+exit 0

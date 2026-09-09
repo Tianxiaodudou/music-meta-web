@@ -1,0 +1,1436 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>音乐数据刮削</title>
+<style>
+  :root { --accent:#1d9bf0; --ok:#1aab5e; --warn:#e0a800; --err:#d9534f; --bg:#f5f6f8; }
+  * { box-sizing: border-box; }
+  body { font-family: "PingFang SC","Microsoft YaHei",sans-serif; margin:0; background:var(--bg); color:#222; }
+  /* 顶栏：任何页面都置顶显示 */
+  .topbar { position:sticky; top:0; z-index:90; background:#fff; border-bottom:1px solid #e3e6ea; padding:10px 20px; box-shadow:0 2px 6px rgba(0,0,0,.04); }
+  .topbar h1 { font-size:16px; margin:0 16px 0 0; white-space:nowrap; }
+  .topbar .row1 { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:8px; }
+  .topbar .stats { display:flex; flex-wrap:wrap; gap:14px; font-size:13px; align-items:center; }
+  .topbar .stats b { font-size:17px; }
+  .topbar nav { display:flex; flex-wrap:wrap; gap:6px; }
+  .topbar nav button { padding:5px 14px; font-size:13px; border:1px solid #d5d9de; background:#fff; color:#333; border-radius:14px; cursor:pointer; }
+  .topbar nav button.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .topbar .actions { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+  .running { font-size:12px; color:#999; }
+  main { max-width:1180px; margin:16px auto; padding:0 16px; }
+  .page { display:none; }
+  .page.active { display:block; }
+  .card { background:#fff; border:1px solid #e3e6ea; border-radius:8px; padding:14px 18px; margin-bottom:14px; }
+  .card h2 { font-size:15px; margin:0 0 10px; }
+  .row { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:8px; }
+  label { font-size:13px; color:#555; }
+  input[type=number], input[type=text], input[type=password], select, textarea { padding:6px 8px; border:1px solid #ccc; border-radius:4px; font-size:13px; }
+  input[type=range] { width:220px; }
+  button { padding:6px 14px; border:0; border-radius:4px; background:var(--accent); color:#fff; cursor:pointer; font-size:13px; }
+  button.secondary { background:#6c757d; }
+  button.ok { background:var(--ok); }
+  button.warn { background:var(--warn); }
+  button.danger { background:var(--err); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .progress { background:#e9ecef; border-radius:4px; height:10px; margin:8px 0; overflow:hidden; }
+  .progress > div { background:var(--accent); height:100%; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid #eee; vertical-align:top; }
+  th { color:#666; font-weight:600; }
+  .tag { display:inline-block; padding:2px 8px; border-radius:10px; font-size:12px; }
+  .tag.auto_ok { background:#d4edda; color:#155724; }
+  .tag.manual_pending { background:#fff3cd; color:#856404; }
+  .tag.manual_done { background:#cce5ff; color:#004085; }
+  .tag.skipped { background:#e2e3e5; color:#383d41; }
+  .tag.error { background:#f8d7da; color:#721c24; }
+  .tag.processing { background:#d1ecf1; color:#0c5460; }
+  .tag.pending { background:#e7e9ee; color:#555; }
+  .cand { border:1px solid #e3e6ea; border-radius:8px; padding:10px; margin:8px 0; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  .cand img { width:56px; height:56px; border-radius:4px; object-fit:cover; background:#eee; }
+  .cand .info { flex:1; font-size:13px; min-width:200px; }
+  .cand .score { color:var(--accent); font-weight:700; }
+  .noimg { width:56px; height:56px; border-radius:4px; background:#eee; display:flex; align-items:center; justify-content:center; color:#999; font-size:24px; flex-shrink:0; }
+  .muted { color:#888; font-size:12px; }
+  .pager { display:flex; gap:8px; align-items:center; margin:10px 0; font-size:13px; }
+  .searchbar { display:flex; gap:8px; margin:8px 0; }
+  .searchbar input { flex:1; max-width:340px; }
+  /* 编辑弹窗 */
+  .modal { position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:100; display:none; align-items:flex-start; justify-content:center; overflow:auto; padding:30px 10px; }
+  .modal.open { display:flex; }
+  .modal-box { background:#fff; border-radius:10px; padding:16px 20px; width:min(900px,96vw); }
+  .modal-box h3 { margin:0 0 10px; font-size:15px; }
+  .field-row { display:flex; gap:8px; align-items:center; padding:7px 0; border-bottom:1px solid #f0f2f4; flex-wrap:wrap; }
+  .field-row .fname { width:84px; font-size:13px; color:#444; font-weight:600; flex-shrink:0; }
+  .field-row .fval { flex:1; min-width:140px; font-size:13px; color:#222; }
+  .field-row input { width:180px; }
+  .field-row textarea { width:100%; min-height:80px; font-size:12px; }
+  .candlist { margin:6px 0 0; max-height:320px; overflow:auto; border:1px solid #e3e6ea; border-radius:6px; padding:8px; background:#fafbfc; }
+  .candlist .src-title { font-size:12px; color:var(--accent); font-weight:700; margin:8px 0 4px; }
+  .canditem { display:flex; gap:8px; align-items:center; padding:5px; border-radius:4px; font-size:12px; flex-wrap:wrap; }
+  .canditem:hover { background:#eef6ff; }
+  .canditem img { width:40px; height:40px; border-radius:3px; object-fit:cover; background:#eee; }
+  .lrc-line { padding:2px 4px; border-radius:3px; }
+  .lrc-line.active { color:var(--accent); font-weight:700; background:#e7f3ff; }
+  #msg { position:fixed; right:16px; top:64px; background:#333; color:#fff; padding:10px 16px; border-radius:6px; display:none; z-index:200; }
+  .err-detail { background:#fdf0ef; border:1px solid #f5c6cb; border-radius:4px; padding:6px 10px; font-size:12px; color:#721c24; white-space:pre-wrap; }
+  .empty { color:#999; font-size:13px; padding:10px 0; }
+  /* ================= 手机/窄屏适配（<=760px） ================= */
+  @media (max-width: 760px) {
+    body { font-size:14px; }
+    .topbar { padding:8px 10px; }
+    .topbar h1 { font-size:15px; margin-right:8px; }
+    .topbar .stats { gap:10px; font-size:12px; }
+    .topbar .stats b { font-size:15px; }
+    .topbar nav { gap:5px; }
+    .topbar nav button { padding:4px 11px; font-size:12px; }
+    .topbar .actions { gap:5px; }
+    .topbar .actions button { font-size:12px; padding:5px 10px; }
+    main { padding:0 10px; margin:10px auto; }
+    .card { padding:10px 12px; }
+    .card h2 { font-size:14px; }
+    .card h2 button { font-size:12px; padding:4px 9px; margin-bottom:2px; float:none; display:inline-block; margin-right:6px; }
+    .row { gap:6px; }
+    input[type=number], input[type=text], input[type=password], select, textarea { font-size:16px; padding:7px 8px; }
+    button { padding:7px 12px; font-size:13px; }
+    /* 表格 → 卡片式：每行一张卡，字段带标签 */
+    table { display:block; }
+    thead { display:none; }
+    tbody { display:block; }
+    tr { display:block; border:1px solid #e3e6ea; border-radius:8px; padding:8px 10px; margin-bottom:10px; background:#fff; }
+    td { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; border:none; padding:4px 0; font-size:13px; }
+    td::before { content:attr(data-label); color:#888; font-size:12px; min-width:64px; flex-shrink:0; }
+    td .err-detail { width:100%; }
+    .pager { flex-wrap:wrap; gap:6px; font-size:12px; }
+    .searchbar { flex-wrap:wrap; }
+    .searchbar input { min-width:100%; }
+    /* 弹窗：手机全屏化——整屏显示，头部吸顶，内容区滚动（信息不减少） */
+    .modal { padding:0; align-items:stretch; }
+    .modal-box {
+      width:100% !important; max-width:100% !important;
+      height:100vh; height:100dvh;
+      border-radius:0;
+      overflow-y:auto; -webkit-overflow-scrolling:touch;
+      padding:10px 12px calc(16px + env(safe-area-inset-bottom));
+    }
+    /* 头部（标题+关闭按钮）吸顶，滚动时始终可见 */
+    .modal-box > div:first-child {
+      position:sticky; top:0; z-index:5;
+      background:#fff;
+      padding:8px 0; margin-bottom:8px;
+      border-bottom:1px solid #e3e6ea;
+    }
+    /* 候选卡片 */
+    .cand { gap:8px; padding:8px; }
+    .cand img { width:48px; height:48px; }
+    .noimg { width:48px; height:48px; }
+    .cand .info { min-width:150px; }
+    /* 字段行（编辑/查看弹窗） */
+    .field-row { gap:6px; }
+    .field-row .fname { width:auto; min-width:70px; }
+    .field-row input { width:100%; }
+    .field-row .fval { min-width:0; }
+    .canditem { font-size:12px; }
+    #msg { left:10px; right:10px; top:auto; bottom:16px; text-align:center; font-size:13px; }
+  }
+</style>
+</head>
+<body>
+<div id="msg"></div>
+
+<!-- ======= 顶栏（所有页面置顶） ======= -->
+<div class="topbar">
+  <div class="row1">
+    <h1>🎵 音乐数据刮削</h1>
+    <span class="running" id="runState"></span>
+    <div class="stats" id="stats"></div>
+  </div>
+  <nav id="topnav">
+    <button id="nav-total"    class="active" onclick="showPage('total')">总数</button>
+    <button id="nav-autowrite" onclick="showPage('autowrite')">自动写入</button>
+    <button id="nav-pending"  onclick="showPage('pending')">待人工</button>
+    <button id="nav-manualdone" onclick="showPage('manualdone')">已人工</button>
+    <button id="nav-skip"     onclick="showPage('skip')">跳过</button>
+    <button id="nav-error"    onclick="showPage('error')">错误</button>
+    <button id="nav-config"   onclick="showPage('config')">配置</button>
+  </nav>
+  <div class="actions">
+    <button onclick="scan()">① 扫描目录</button>
+    <button onclick="run()">② 开始刮削</button>
+    <button class="warn" onclick="stop()">暂停</button>
+    <button class="secondary" onclick="resetTasks()">清空任务</button>
+  </div>
+</div>
+
+<main>
+  <!-- ======= 总数页面 ======= -->
+  <div class="page active" id="page-total">
+    <div class="card">
+      <h2>总数统计（当前扫描到的全部歌曲）
+        <button class="ok" style="float:right" onclick="scrapePending()">▶ 刮削待处理文件</button>
+      </h2>
+      <div class="searchbar">
+        <input type="text" id="total_q" placeholder="搜索歌曲名 / 文件名…" onkeydown="if(event.key==='Enter')loadTotal()">
+        <button class="secondary" onclick="loadTotal()">搜索</button>
+        <button class="secondary" onclick="$('total_q').value='';loadTotal()">清空</button>
+        <span class="muted" id="total_info"></span>
+      </div>
+      <div class="row" style="margin-top:4px">
+        <label><b>元数据过滤：</b></label>
+        <label><input type="checkbox" id="f_no_lyrics" onchange="loadTotal()"> 无歌词 <span class="fcnt muted" id="fc_no_lyrics">…</span></label>
+        <label><input type="checkbox" id="f_no_cover" onchange="loadTotal()"> 无封面 <span class="fcnt muted" id="fc_no_cover">…</span></label>
+        <label><input type="checkbox" id="f_no_title" onchange="loadTotal()"> 无标题 <span class="fcnt muted" id="fc_no_title">…</span></label>
+        <label><input type="checkbox" id="f_no_artist" onchange="loadTotal()"> 无歌手 <span class="fcnt muted" id="fc_no_artist">…</span></label>
+        <label><input type="checkbox" id="f_no_album" onchange="loadTotal()"> 无专辑 <span class="fcnt muted" id="fc_no_album">…</span></label>
+        <label><input type="checkbox" id="f_no_year" onchange="loadTotal()"> 无年份 <span class="fcnt muted" id="fc_no_year">…</span></label>
+        <label><input type="checkbox" id="f_no_genre" onchange="loadTotal()"> 无流派 <span class="fcnt muted" id="fc_no_genre">…</span></label>
+        <label><input type="checkbox" id="f_no_track" onchange="loadTotal()"> 无曲目 <span class="fcnt muted" id="fc_no_track">…</span></label>
+        <button class="secondary" onclick="clearFilter()">清除过滤</button>
+      </div>
+      <div id="emptyGuide" style="display:none;background:#fff8e1;border:1px solid #ffe082;border-radius:6px;padding:10px 14px;margin:10px 0;font-size:13px;line-height:1.9">
+        <b>还没有任何任务，按下面三步开始：</b><br>
+        ① 先在「应用中心 → 音乐数据刮削 → 设置 → 授权目录」把音乐目录（如 /vol2/1000/音频库）授权给本应用<br>
+        ② 到「配置」页确认音乐目录与数据源 → 保存配置<br>
+        ③ 点顶栏「① 扫描目录」→「② 开始刮削」
+      </div>
+      <div class="progress"><div id="prog" style="width:0%"></div></div>
+      <table id="totalTable">
+        <thead><tr><th style="width:34%">文件</th><th>状态</th><th>匹配结果</th><th>得分</th><th>已写入</th><th>操作</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="pager" id="total_pager"></div>
+    </div>
+  </div>
+
+  <!-- ======= 自动写入页面 ======= -->
+  <div class="page" id="page-autowrite">
+    <div class="card">
+      <h2>自动写入队列（当前正在写入的歌曲始终在第一位）
+        <button class="ok" style="float:right" onclick="exportAutoOk()">💾 导出已写入歌曲到缓存</button>
+      </h2>
+      <p class="muted">导出后：下次全量扫描时，这些歌直接从本地缓存自动写入，不再请求服务器（更快、不风控）。</p>
+      <div id="export_status" class="muted" style="margin:6px 0"></div>
+      <div id="autowrite"></div>
+      <div class="pager" id="autowrite_pager"></div>
+    </div>
+  </div>
+
+  <!-- ======= 待人工页面 ======= -->
+  <div class="page" id="page-pending">
+    <div class="card">
+      <h2>人工辅助队列（匹配值 &lt; 阈值）
+        <button class="ok" style="float:right" onclick="reprocessPending()">🔄 重新刮削本队列</button>
+        <button class="secondary" style="float:right;margin-right:8px" onclick="loadPending()">刷新</button>
+        <button class="secondary" style="float:right;margin-right:8px" onclick="batchBest()">批量选用最高分</button>
+        <button class="warn" style="float:right;margin-right:8px" onclick="batchSkip()">批量跳过</button>
+      </h2>
+      <p class="muted">从每个文件的多条候选结果中选最匹配的一首。点「查看」可看该候选的全部字段（含封面与歌词），勾选/取消勾选决定选用时写入哪些字段；点「预览」可播放本地音频核对。</p>
+      <div id="pending"></div>
+      <div class="pager" id="pending_pager"></div>
+    </div>
+  </div>
+
+  <!-- ======= 已人工页面 ======= -->
+  <div class="page" id="page-manualdone">
+    <div class="card">
+      <h2>已人工处理（永久记忆，刮削时自动排除）</h2>
+      <p class="muted">开启「真实写入模式」后人工处理过的歌曲会按文件哈希永久记住；之后开始刮削会跳过这些文件（即使总数统计里有它）。点「移除」可取消记忆。</p>
+      <div class="searchbar">
+        <input type="text" id="md_q" placeholder="搜索已人工处理的歌曲…" onkeydown="if(event.key==='Enter')loadManualDone()">
+        <button class="secondary" onclick="loadManualDone()">搜索</button>
+        <button class="secondary" onclick="$('md_q').value='';loadManualDone()">清空</button>
+        <span class="muted" id="md_info"></span>
+      </div>
+      <table id="mdTable">
+        <thead><tr><th style="width:50%">文件</th><th>内容哈希</th><th>处理时间</th><th>操作</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="pager" id="md_pager"></div>
+    </div>
+  </div>
+
+  <!-- ======= 跳过页面 ======= -->
+  <div class="page" id="page-skip">
+    <div class="card">
+      <h2>跳过队列</h2>
+      <p class="muted">被跳过的歌曲：每一项都可以单独刮削或手动编辑（与总数页同一套编辑功能），编辑后可重新参与处理。</p>
+      <div class="searchbar">
+        <input type="text" id="skip_q" placeholder="搜索…" onkeydown="if(event.key==='Enter')loadSkip()">
+        <button class="secondary" onclick="loadSkip()">搜索</button>
+        <button class="secondary" onclick="$('skip_q').value='';loadSkip()">清空</button>
+        <button class="secondary" onclick="unskipAll()">全部恢复为待人工</button>
+        <span class="muted" id="skip_info"></span>
+      </div>
+      <table id="skipTable">
+        <thead><tr><th style="width:34%">文件</th><th>匹配结果</th><th>备注</th><th>操作</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="pager" id="skip_pager"></div>
+    </div>
+  </div>
+
+  <!-- ======= 错误页面 ======= -->
+  <div class="page" id="page-error">
+    <div class="card">
+      <h2>错误详情
+        <button class="ok" style="float:right" onclick="reprocessErrors()">🔄 重刮本队列（只刮这几首）</button>
+      </h2>
+      <p class="muted">以下歌曲在处理时出错，显示详细错误信息（中文）。点「重刮本队列」只针对这几首重新刮削，不会带上其它歌曲。</p>
+      <table id="errorTable">
+        <thead><tr><th style="width:30%">文件</th><th>错误信息</th><th>操作</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="pager" id="error_pager"></div>
+    </div>
+  </div>
+
+  <!-- ======= 配置页面 ======= -->
+  <div class="page" id="page-config">
+    <div class="card">
+      <h2>配置</h2>
+      <div class="row">
+        <label>匹配阈值 <b id="thVal">0.9</b>（满分 1.0，≥阈值自动写入）</label>
+        <input type="range" id="threshold" min="0.5" max="1" step="0.01" value="0.9">
+      </div>
+      <div class="row">
+        <label>音乐目录</label>
+        <input type="text" id="music_dir" style="width:380px">
+        <label><input type="checkbox" id="recursive" checked> 递归子目录</label>
+      </div>
+      <div class="row">
+        <label>请求间隔（秒）</label>
+        <input type="number" id="min_interval" value="0.3" min="0.1" step="0.05" style="width:90px">
+        <label>并发数</label>
+        <input type="number" id="concurrency" value="1" min="1" max="8" style="width:70px">
+        <label>每源显示候选数</label>
+        <input type="number" id="source_limit" value="10" min="1" max="20" style="width:70px">
+        <label class="muted">（候选列表里每个源显示几条结果，默认 10）</label>
+      </div>
+      <div class="row">
+        <label><input type="checkbox" id="idle_exit_enable" onchange="toggleIdleExit()"> <b>空闲自动退出</b></label>
+        <input type="number" id="idle_exit_minutes" value="30" min="1" step="5" style="width:80px" disabled>
+        <label class="muted">分钟无操作后自动停止后台进程</label>
+        <button class="secondary" onclick="$('idle_exit_enable').checked=false;toggleIdleExit()" id="idle_off_btn" style="display:none">关闭</button>
+      </div>
+      <div class="row" style="margin-top:-4px">
+        <label class="muted" style="color:var(--warn)">⚠ 开启后：长时间无人使用（且无刮削任务）会自动退出进程释放资源。退出后 fnOS 会显示应用「未运行」，需要到<b>应用中心 → 音乐数据刮削 → 启用</b>才能再次打开。默认关闭（进程常驻，不自动退出）。</label>
+      </div>
+      <div class="row">
+        <label><b>元数据源（可多选；单项刮削候选 = 每个勾选源前 10 条）</b></label>
+        <span id="source_checks"></span>
+      </div>
+      <div class="row">
+        <label>插件目录</label>
+        <input type="text" id="plugins_dir" style="width:380px">
+        <label class="muted" id="plugins_dir_hint"></label>
+      </div>
+      <div class="row">
+        <label><b>匹配方式（二选一）</b></label>
+        <label><input type="radio" name="matching_mode" value="filename" checked> 按文件名匹配</label>
+        <label><input type="radio" name="matching_mode" value="fingerprint"> 按音频指纹识别（需 AcoustID Key + qqmusic 插件）</label>
+      </div>
+      <div class="row">
+        <label>AcoustID Key（指纹模式需要）</label>
+        <input type="password" id="acoustid_key" style="width:280px">
+      </div>
+      <div class="row">
+        <label><b>写入字段</b></label>
+        <label><input type="checkbox" id="write_title" checked> 标题</label>
+        <label><input type="checkbox" id="write_artist" checked> 歌手</label>
+        <label><input type="checkbox" id="write_year" checked> 年份</label>
+        <label><input type="checkbox" id="write_album" checked> 专辑</label>
+        <label><input type="checkbox" id="write_album_artist" checked> 专辑艺人</label>
+        <label><input type="checkbox" id="write_genre" checked> 流派</label>
+        <label><input type="checkbox" id="write_track" checked> 曲目号</label>
+        <label><input type="checkbox" id="write_disc" checked> 碟号</label>
+        <label><input type="checkbox" id="write_company" checked> 唱片公司</label>
+        <label><input type="checkbox" id="write_language" checked> 语言</label>
+        <label><input type="checkbox" id="write_cover" checked> 封面图</label>
+        <label><input type="checkbox" id="write_lyrics" checked> 歌词</label>
+      </div>
+      <div class="row">
+        <label><input type="checkbox" id="write_enabled"> <b style="color:var(--warn)">启用真实写入</b>（关闭=仅学习/预览；开启后才会真正写入，且人工处理过的歌曲才会被永久记忆并自动排除）</label>
+        <button class="secondary" onclick="saveConfig()">保存配置</button>
+      </div>
+    </div>
+  </div>
+</main>
+
+<!-- ======= 歌曲详情弹窗（编辑 + 查看/预览 整合） ======= -->
+<div class="modal" id="detailModal">
+  <div class="modal-box">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <h3 id="dtTitle" style="margin:0">歌曲详情</h3>
+      <button class="secondary" onclick="closeDetail()">关闭</button>
+    </div>
+    <div class="muted" id="dtPath" style="margin:6px 0;word-break:break-all"></div>
+    <!-- 试听区 -->
+    <div style="border:1px solid #e3e6ea;border-radius:8px;padding:8px 10px;margin:6px 0">
+      <div class="muted" style="margin-bottom:4px"><b style="color:#333">试听（本地音频）</b></div>
+      <div id="dtCandInfo" class="muted" style="margin-bottom:4px;font-size:12px"></div>
+      <audio id="dtAudio" controls style="width:100%"></audio>
+      <div class="muted" style="margin-top:6px;font-size:12px">
+        <b id="dtLyrLabel" style="color:var(--accent)">▌候选歌词</b>
+        <span class="muted" id="dtLyrSrc"></span>
+      </div>
+      <div id="dtLyrics" style="margin-top:4px;max-height:150px;overflow:auto;background:#f8f9fa;border-radius:6px;padding:6px 10px;font-size:12px;white-space:pre-wrap">（暂无歌词）</div>
+    </div>
+    <!-- 候选区 -->
+    <div id="dtCands" style="margin:6px 0"></div>
+    <!-- 字段编辑区 -->
+    <div id="dtFields"></div>
+  </div>
+</div>
+
+<!-- ======= 删除确认弹窗（只删任务 / 连文件一起删） ======= -->
+<div class="modal" id="delModal">
+  <div class="modal-box" style="width:min(520px,96vw)">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <h3 id="delTitle" style="margin:0">删除确认</h3>
+      <button class="secondary" onclick="closeDel()">取消</button>
+    </div>
+    <div id="delBody" style="margin:12px 0;line-height:1.7;font-size:13px"></div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      <button class="secondary" onclick="closeDel()">取消</button>
+      <button class="warn" onclick="doDeleteTask(false)">🗑 只删除任务（保留音乐文件）</button>
+      <button class="danger" onclick="doDeleteTask(true)">🗑 删除任务 + 音乐文件本体</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const STATUS_CN = {pending:"待处理", processing:"处理中", auto_ok:"自动写入", manual_pending:"待人工", manual_done:"已人工", skipped:"跳过", error:"错误"};
+const FIELD_LABELS = {cover:"封面", artist:"歌手", year:"年份", lyrics:"歌词", title:"标题"};
+// 可编辑字段：显示名 -> (后端字段名, 候选取值键)
+const EDIT_FIELDS = [
+  ["title","标题","title"], ["artist","歌手","artist"], ["album","专辑","album"],
+  ["album_artist","专辑艺人","album_artist"], ["year","年份","date"], ["genre","流派","genre"],
+  ["track","曲目号","track"], ["track_total","总曲目","track_total"], ["disc","碟号","disc"],
+  ["publisher","唱片公司","publisher"], ["language","语言","language"],
+  ["lyrics","歌词(多行)","lyrics"], ["cover","封面图(上传/候选)","cover_url"],
+];
+let coverCache = {};
+let pendingData = [];
+const lyricsCache = {};
+const lyricsOpen = new Set();
+const pageState = {total:{page:0,q:""}, autowrite:{page:0}, pending:{page:0},
+                   manualdone:{page:0,q:""}, skip:{page:0,q:""}, error:{page:0}};
+
+function msg(t) { const m=$("msg"); m.textContent=t; m.style.display="block"; setTimeout(()=>m.style.display="none", 3000); }
+function esc(s){ return String(s??"").replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+// 常见英文错误 → 中文兜底翻译（后端已尽量输出中文，这里再兜一层）
+function cnErr(s){
+  const str = String(s||"");
+  const rules = [
+    [/\[Errno 2\][^\n]*|No such file or directory/i, "文件不存在（可能已被移动或删除）"],
+    [/\[Errno 13\][^\n]*|Permission denied/i, "没有写入权限（请检查该文件/目录的 ACL 权限）"],
+    [/\[Errno 28\][^\n]*|No space left on device/i, "磁盘空间不足"],
+    [/\[Errno 30\][^\n]*|Read-only file system/i, "文件系统只读，无法写入"],
+    [/\[Errno 21\][^\n]*|Is a directory/i, "路径是目录而非文件"],
+    [/\[Errno 20\][^\n]*|Not a directory/i, "路径不是目录"],
+    [/\[Errno 17\][^\n]*|File exists/i, "目标文件已存在"],
+    [/\[Errno 1\][^\n]*|Operation not permitted/i, "操作不允许（权限不足）"],
+    [/timed out|timeout/i, "请求超时（网络慢或源服务无响应）"],
+    [/connection (refused|reset|aborted)/i, "网络连接失败（源服务不可达）"],
+  ];
+  for(const [re, cn] of rules){ if(re.test(str)) return str.replace(re, cn); }
+  return str;
+}
+function coverUrl(albummid){ if(!albummid) return ""; if(!coverCache[albummid]) coverCache[albummid] = `https://y.gtimg.cn/music/photo_new/T002R300x300M000${albummid}.jpg`; return coverCache[albummid]; }
+function coverHtml(albummid){
+  if(!albummid) return '<div class="noimg">🎵</div>';
+  return `<img src="${coverUrl(albummid)}" onerror="this.outerHTML='<div class=noimg>🎵</div>'">`;
+}
+function getBase(){
+  const p = location.pathname;
+  if (p === "/" || p === "") return "";
+  const parts = p.split("/").filter(Boolean);
+  if (parts[0] === "app" && parts.length >= 2) return "/" + parts.slice(0, 2).join("/") + "/";
+  if (!p.endsWith("/")) return p.slice(0, p.lastIndexOf("/") + 1);
+  return p;
+}
+const BASE = getBase();
+async function api(url, opts){
+  const r = await fetch(BASE + String(url).replace(/^\//, ""), opts);
+  const text = await r.text().catch(()=> "");
+  if(!r.ok){
+    let detail = text;
+    try { const j = JSON.parse(text); if(j && j.detail) detail = j.detail; } catch(e){}
+    throw new Error(detail || ("HTTP " + r.status));
+  }
+  if(!text) throw new Error("空响应");
+  try { return JSON.parse(text); }
+  catch(e){ throw new Error("响应不是 JSON: " + text.slice(0,120)); }
+}
+
+// ---------------- 页面切换 ----------------
+function showPage(name){
+  document.querySelectorAll(".page").forEach(p => p.classList.remove("active"));
+  $("page-" + name).classList.add("active");
+  document.querySelectorAll("#topnav button").forEach(b => b.classList.remove("active"));
+  $("nav-" + name).classList.add("active");
+  ({total:loadTotal, autowrite:loadAutoWrite, pending:loadPending,
+    manualdone:loadManualDone, skip:loadSkip, error:loadError, config:loadConfig})[name]();
+}
+
+// 通用分页条
+function pagerHtml(elId, total, page, perPage){
+  const pages = Math.max(1, Math.ceil(total / perPage));
+  return `<button class="secondary" onclick="pageGo('${elId}',${page-1})" ${page<=0?"disabled":""}>‹ 上一页</button>` +
+         `<span>第 ${page+1} / ${pages} 页（共 ${total} 条）</span>` +
+         `<button class="secondary" onclick="pageGo('${elId}',${page+1})" ${page>=pages-1?"disabled":""}>下一页 ›</button>`;
+}
+function pageGo(name, page){
+  if(page < 0) return;
+  pageState[name].page = page;
+  ({total:loadTotal, autowrite:loadAutoWrite, pending:loadPending,
+    manualdone:loadManualDone, skip:loadSkip, error:loadError})[name]();
+}
+
+// ---------------- 顶栏统计与状态 ----------------
+async function loadStats(){
+  const s = await api("/api/stats");
+  const total = Object.values(s).reduce((a,b)=>a+b,0);
+  const done = (s.auto_ok||0)+(s.manual_done||0)+(s.skipped||0)+(s.error||0);
+  const pct = total ? Math.round(done/total*100) : 0;
+  const el = $("prog"); if(el) el.style.width = pct + "%";
+  $("stats").innerHTML =
+    `<span>总数 <b>${total}</b></span>` +
+    `<span>自动写入 <b style="color:var(--ok)">${s.auto_ok||0}</b></span>` +
+    `<span>待人工 <b style="color:var(--warn)">${s.manual_pending||0}</b></span>` +
+    `<span>已人工 <b style="color:var(--accent)">${s.manual_done||0}</b></span>` +
+    `<span>跳过 <b>${s.skipped||0}</b></span>` +
+    `<span>错误 <b style="color:var(--err)">${s.error||0}</b></span>` +
+    `<span>进度 <b>${pct}%</b></span>`;
+  $("emptyGuide").style.display = total ? "none" : "block";
+}
+
+// ---------------- 总数页面 ----------------
+let totalLoading = false;
+async function loadTotal(){
+  if(totalLoading) return;          // 防止轮询并发重复过滤（很慢）
+  totalLoading = true;
+  const st = pageState.total;
+  const per = 100;
+  const q = $("total_q").value.trim();
+  const conds = [];
+  for(const [id, cond] of [["f_no_lyrics","no_lyrics"],["f_no_cover","no_cover"],
+      ["f_no_title","no_title"],["f_no_artist","no_artist"],["f_no_album","no_album"],
+      ["f_no_year","no_year"],["f_no_genre","no_genre"],["f_no_track","no_track"]]){
+    const el = $(id);
+    if(el && el.checked) conds.push(cond);
+  }
+  const filter = conds.join(",");
+  const url = `/api/tasks?limit=${per}&offset=${st.page*per}${q?"&q="+encodeURIComponent(q):""}${filter?"&filter="+encodeURIComponent(filter):""}`;
+  // 过滤时首次要逐个读文件标签，可能较慢，先给提示
+  const tb = $("totalTable").querySelector("tbody");
+  if(filter){
+    tb.innerHTML = '<tr><td colspan="6" class="empty">正在过滤（需读取每首歌的真实标签，首次约需 10~30 秒，请稍候）…</td></tr>';
+  }
+  try{
+    const d = await api(url);
+    let info = q ? `搜索「${q}」` : "";
+    if(filter){
+      const labels = conds.map(c => ({no_lyrics:"无歌词",no_cover:"无封面",no_title:"无标题",no_artist:"无歌手",no_album:"无专辑",no_year:"无年份",no_genre:"无流派",no_track:"无曲目"}[c]||c)).join(" + ");
+      info = (info ? info + " 且 " : "") + `过滤「${labels}」`;
+    }
+    $("total_info").textContent = info ? `${info}：共 ${d.total} 条` : "";
+    if(!d.items.length){ tb.innerHTML = '<tr><td colspan="6" class="empty">' + (filter ? "没有符合过滤条件的歌曲（无该过滤标签的歌曲）" : "暂无任务，先点顶栏「① 扫描目录」") + '</td></tr>'; }
+    else tb.innerHTML = d.items.map(t => taskRow(t, true)).join("");
+    $("total_pager").innerHTML = pagerHtml("total", d.total, st.page, per);
+  }catch(e){
+    tb.innerHTML = `<tr><td colspan="6" class="empty">加载失败：${esc(e.message||e)}</td></tr>`;
+  }
+  totalLoading = false;
+  loadFilterCounts();   // 同步刷新每个过滤器的数量
+}
+function clearFilter(){
+  for(const id of ["f_no_lyrics","f_no_cover","f_no_title","f_no_artist","f_no_album","f_no_year","f_no_genre","f_no_track"]){
+    $(id).checked = false;
+  }
+  pageState.total.page = 0;
+  loadTotal();
+}
+
+async function scrapePending(){
+  msg("正在刮削全部「待处理」文件…");
+  try{
+    const r = await api("/api/scrape-pending", {method:"POST"});
+    msg(r.count ? `已对 ${r.count} 个待处理文件启动刮削` : "当前没有待处理文件");
+    loadTotal(); loadAutoWrite(); loadStats(); loadFilterCounts();
+  }catch(e){ msg("启动失败：" + (e.message||e)); }
+}
+
+// 过滤器数量实时统计（无歌词 X 首 / 无封面 X 首…）
+let fcLoading = false;
+const FC_KEYS = [["no_lyrics","fc_no_lyrics"],["no_cover","fc_no_cover"],
+  ["no_title","fc_no_title"],["no_artist","fc_no_artist"],["no_album","fc_no_album"],
+  ["no_year","fc_no_year"],["no_genre","fc_no_genre"],["no_track","fc_no_track"]];
+async function loadFilterCounts(){
+  if(fcLoading) return;
+  fcLoading = true;
+  try{
+    const d = await api("/api/filter-counts");
+    for(const [k, elId] of FC_KEYS){
+      const el = $(elId);
+      if(el) el.textContent = "(" + (d[k] ?? "?") + ")";
+    }
+  }catch(e){ /* 首次较慢或失败时保留占位 */ }
+  fcLoading = false;
+}
+
+function taskRow(t, withEdit){
+  const written = (t.written||"").split(",").filter(Boolean).map(w => FIELD_LABELS[w] || w).join("、");
+  const match = `${esc(t.title||"")} ${t.artist?"- "+esc(t.artist):""} ${t.year?"("+esc(t.year)+")":""}`;
+  let btns = "";
+  if(withEdit) btns += `<button class="secondary" onclick="openDetail('${esc(t.path).replace(/'/g,"\\'")}')">编辑</button>`;
+  if(t.status === "manual_done") btns += `<button class="warn" onclick="restoreTask('${esc(t.path).replace(/'/g,"\\'")}')">移回人工</button>`;
+  return `<tr><td data-label="文件">${esc(t.name)}</td>` +
+    `<td data-label="状态"><span class="tag ${esc(t.status)}">${STATUS_CN[t.status]||esc(t.status)}</span></td>` +
+    `<td data-label="匹配结果">${match}</td>` +
+    `<td data-label="得分">${t.score!=null?(t.score/100).toFixed(2):""}</td>` +
+    `<td data-label="已写入">${written ? `<span style="color:var(--ok)">${esc(written)}</span>` : ""}</td>` +
+    `<td data-label="操作">${btns}</td></tr>`;
+}
+async function restoreTask(file){
+  if(!confirm("把这首歌移回人工辅助队列？\n\n将删除它的已人工永久记忆（哈希）与决策记录，任务回到「待人工」状态，可重新参与选择；文件本身不会被修改。")) return;
+  try{
+    await api("/api/tasks/restore", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({file})});
+    msg("已移回人工辅助队列");
+    loadTotal(); loadManualDone(); loadPending(); loadStats(); refreshCurrent();
+  }catch(e){ msg("操作失败：" + (e.message||e)); }
+}
+
+// ---------------- 自动写入页面 ----------------
+async function loadAutoWrite(){
+  const st = pageState.autowrite, per = 100;
+  const box = $("autowrite");
+  try{
+    const cur = await api("/api/tasks?status=processing&limit=100");
+    const done = await api(`/api/tasks?status=auto_ok&limit=${per}&offset=${st.page*per}`);
+    $("autowrite_pager").innerHTML = pagerHtml("autowrite", done.total, st.page, per);
+    let html = "";
+    if(cur.items.length){
+      html += `<div class="card" style="border:2px solid var(--ok)"><b style="color:var(--ok)">● 正在写入（队列第一位）：</b></div>`;
+      html += cur.items.map(t => `<div class="cand"><div class="info"><b>${esc(t.name)}</b><br><span class="muted">${esc(t.title||"")} ${t.artist?"- "+esc(t.artist):""}</span></div><span class="tag processing">处理中</span></div>`).join("");
+    }
+    if(done.items.length){
+      html += `<div class="muted" style="margin:10px 0 4px">— 已完成（顺延在后的记录）—</div>`;
+      html += done.items.map(t => `<div class="cand"><div class="info"><b>${esc(t.name)}</b><br><span class="muted">${esc(t.title||"")} ${t.artist?"- "+esc(t.artist):""}</span></div><span class="tag auto_ok">已写入</span></div>`).join("");
+    }
+    if(!html) html = '<div class="empty">当前没有自动写入任务（点顶栏「② 开始刮削」开始）</div>';
+    box.innerHTML = html;
+  }catch(e){ box.innerHTML = `<div class="empty">加载失败：${esc(e.message||e)}</div>`; }
+}
+
+// ---------------- 导出已写入歌曲到缓存（下次全量扫描零网络） ----------------
+let exportTimer = null;
+async function exportAutoOk(){
+  try{
+    const r = await api("/api/cache/export-auto-ok", {method:"POST"});
+    if(r.running){ msg("已有导出任务在运行"); return; }
+    msg(`开始导出 ${r.total} 首已写入歌曲到缓存…（后台执行，可关闭页面等待）`);
+    $("export_status").textContent = `导出中：0 / ${r.total}（正在读取文件标签…）`;
+    if(exportTimer) clearInterval(exportTimer);
+    exportTimer = setInterval(async () => {
+      try{
+        const s = await api("/api/cache/export-status");
+        if(s.running){
+          $("export_status").textContent = `导出中：${s.done} / ${s.total}（失败 ${s.errors}）`;
+        }else{
+          clearInterval(exportTimer); exportTimer = null;
+          $("export_status").textContent = `导出完成：${s.done} 首已写入缓存，失败 ${s.errors} 首。下次全量扫描命中缓存直接写入，不再请求服务器。`;
+          msg("导出完成");
+        }
+      }catch(e){}
+    }, 2000);
+  }catch(e){ msg("导出失败：" + (e.message||e)); }
+}
+
+// ---------------- 待人工页面 ----------------
+async function loadPending(){
+  const st = pageState.pending, per = 100;
+  const d = await api(`/api/pending?limit=${per}&offset=${st.page*per}`);
+  pendingData = d.items;
+  $("pending_pager").innerHTML = pagerHtml("pending", d.total, st.page, per);
+  const box = $("pending");
+  if(!pendingData.length){ box.innerHTML = '<div class="empty">当前没有待人工决策的文件</div>'; return; }
+  box.innerHTML = "";
+  for(const t of pendingData){
+    const div = document.createElement("div");
+    div.className = "card";
+    div.style.marginBottom = "10px";
+    div.innerHTML = `<div><b>${esc(t.name)}</b> <span class="muted">${esc(cnErr(t.error||""))}</span> <button class="secondary" style="margin-left:8px" onclick="renameFile('${esc(t.path).replace(/'/g,"\\'")}')">重命名</button></div>`;
+    for(const c of (t.candidates||[])){
+      const card = document.createElement("div");
+      card.className = "cand";
+      // 时长对比：文件时长 vs 候选时长 vs 差值
+      const fdur = parseInt(t.file_duration||0,10);
+      const cdur = parseInt(c.duration||0,10);
+      const fmt = (s) => s ? `${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}` : "-";
+      let durHtml = `<span class="muted">文件 ${fmt(fdur)} ｜ 候选 ${fmt(cdur)}</span>`;
+      if(fdur && cdur){
+        const diff = Math.abs(fdur - cdur);
+        durHtml += ` ｜ <b style="color:${diff<=30?"var(--ok)":"var(--warn)"}">差 ${diff}s</b>`;
+      }
+      card.innerHTML =
+        coverHtml(c.albummid) +
+        `<div class="info"><b>${esc(c.title)}</b> - ${esc(c.artist)}<br>` +
+        `<span class="muted">专辑 ${esc(c.album||"-")} ｜ 年份 ${esc(c.year||"-")} ｜ ${durHtml}</span>` +
+        ` <span class="tag" style="background:#e7f3ff;color:var(--accent)">${esc(c.source||"")}</span></div>` +
+        `<span class="score">${(c.score/100).toFixed(2)}</span>` +
+        `<button class="secondary" onclick="openDetail('${esc(t.path).replace(/'/g,"\\'")}','${c.songmid}')">查看/预览</button>` +
+        `<button class="ok" onclick="decide('${esc(t.path).replace(/'/g,"\\'")}','${c.songmid}')">选用</button>`;
+      div.appendChild(card);
+      if(lyricsOpen.has(c.songmid) && lyricsCache[c.songmid]){
+        const box2 = document.createElement("div");
+        box2.style.cssText = "margin-top:6px;max-height:180px;overflow:auto;background:#f8f9fa;padding:8px;border-radius:4px;font-size:12px;white-space:pre-wrap;width:100%";
+        box2.textContent = lyricsCache[c.songmid];
+        card.appendChild(box2);
+      }
+    }
+    const btns = document.createElement("div");
+    btns.className = "row";
+    btns.innerHTML =
+      `<button class="secondary" onclick="refresh('${esc(t.path).replace(/'/g,"\\'")}')">重新搜索</button>` +
+      `<button class="secondary" onclick="recognize('${esc(t.path).replace(/'/g,"\\'")}')">音频指纹识别</button>` +
+      `<button class="secondary" onclick="openDetail('${esc(t.path).replace(/'/g,"\\'")}')">编辑</button>` +
+      `<button class="warn" onclick="decide('${esc(t.path).replace(/'/g,"\\'")}','',true)">跳过不处理</button>` +
+      `<button class="danger" onclick="confirmDelete('${esc(t.path).replace(/'/g,"\\'")}','${esc(t.name).replace(/'/g,"\\'")}','待人工')">删除</button>`;
+    div.appendChild(btns);
+    box.appendChild(div);
+  }
+}
+
+async function renameFile(file){
+  const cur = file.split("/").pop();
+  const name = prompt("输入新文件名（含扩展名，可含歌手）：", cur);
+  if(!name || name === cur) return;
+  try{
+    await api("/api/rename", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({file, new_name: name})});
+    msg("已重命名为 " + name);
+    loadPending(); loadStats(); refreshCurrent();
+  }catch(e){ msg("重命名失败：" + (e.message||e)); }
+}
+
+async function decide(file, songmid, skip=false, fields=null){
+  try{
+    await api("/api/decide", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({file, songmid: songmid||null, skip, fields})});
+    msg(skip ? "已跳过" : "已写入所选结果（已加入永久记忆）");
+    closeDetail();
+    loadPending(); loadStats(); refreshCurrent();
+  }catch(e){ msg("操作失败：" + (e.message||e)); }
+}
+
+// ---------------- 候选选用（人工决策） ----------------
+async function decide(file, songmid, skip=false, fields=null){
+  try{
+    await api("/api/decide", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({file, songmid: songmid||null, skip, fields})});
+    msg(skip ? "已跳过" : "已写入所选结果（已加入永久记忆）");
+    closeDetail();
+    loadPending(); loadStats(); refreshCurrent();
+  }catch(e){ msg("操作失败：" + (e.message||e)); }
+}
+
+async function reprocessPending(){
+  if(!confirm("重新刮削整个人工辅助队列？清空候选并重新搜索（超时/未搜到候选的会再次尝试，成功匹配可能进入自动写入）。")) return;
+  msg("正在重新刮削本队列…");
+  const r = await api("/api/reprocess-pending", {method:"POST"});
+  msg(`已重新入队 ${r.requeued} 个任务，刮削已启动`);
+  loadPending(); loadStats();
+}
+
+// ---------------- 已人工页面 ----------------
+const MD_SHOW = [["title","标题"],["artist","歌手"],["album","专辑"],["date","年份"],
+  ["genre","流派"],["language","语言"],["publisher","唱片公司"],["track","曲目"]];
+function mdTagsHtml(tags){
+  if(!tags || !Object.keys(tags).length) return '<span class="muted">（文件不存在或无法读取标签）</span>';
+  return '<span style="display:flex;flex-wrap:wrap;gap:4px 14px">' +
+    MD_SHOW.map(([k,label]) => {
+      const v = (tags[k]||"").toString().trim();
+      return `<span style="display:inline-flex;align-items:baseline;gap:4px;white-space:normal;word-break:break-all">
+        <span class="muted" style="flex-shrink:0">${label}:</span>
+        ${v ? `<b>${esc(v)}</b>` : '<span class="muted">无</span>'}</span>`;
+    }).join("") + '</span>';
+}
+async function loadManualDone(){
+  const st = pageState.manualdone, per = 100;
+  const q = $("md_q").value.trim();
+  const d = await api(`/api/manual-done?limit=${per}&offset=${st.page*per}${q?"&q="+encodeURIComponent(q):""}`);
+  $("md_info").textContent = q ? `搜索「${q}」：${d.total} 条` : "";
+  const tb = $("mdTable").querySelector("tbody");
+  tb.innerHTML = d.items.length ? d.items.map(m => `<tr>
+    <td data-label="文件">${esc(m.file_path)}${m.exists?"":" <span class='tag error'>文件缺失</span>"}</td>
+    <td data-label="元数据">${mdTagsHtml(m.tags)}</td>
+    <td data-label="处理时间" class="muted">${esc(m.done_at||"")}</td>
+    <td data-label="操作"><button class="secondary" onclick="openDetail('${esc(m.file_path).replace(/'/g,"\\'")}')">编辑</button>
+        <button class="warn" onclick="restoreTask('${esc(m.file_path).replace(/'/g,"\\'")}')">移回人工</button>
+        <button class="danger" onclick="removeManualDone('${esc(m.file_path).replace(/'/g,"\\'")}')">移除</button></td>
+  </tr>`).join("") : '<tr><td colspan="4" class="empty">暂无已人工处理记录（开启真实写入后人工选用/编辑的歌曲会出现在这里）</td></tr>';
+  $("md_pager").innerHTML = pagerHtml("manualdone", d.total, st.page, per);
+}
+async function removeManualDone(file){
+  if(!confirm("确定把这首歌从已人工处理记忆中移除吗？之后刮削会重新处理它。")) return;
+  await api("/api/manual-done/remove", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({file})});
+  msg("已移除"); loadManualDone();
+}
+
+// ---------------- 跳过页面 ----------------
+async function loadSkip(){
+  const st = pageState.skip, per = 100;
+  const q = $("skip_q").value.trim();
+  const url = `/api/tasks?status=skipped&limit=${per}&offset=${st.page*per}${q?"&q="+encodeURIComponent(q):""}`;
+  const d = await api(url);
+  $("skip_info").textContent = q ? `搜索「${q}」：${d.total} 条` : "";
+  const tb = $("skipTable").querySelector("tbody");
+  tb.innerHTML = d.items.length ? d.items.map(t => `<tr>
+    <td data-label="文件">${esc(t.name)}</td>
+    <td data-label="匹配结果">${esc(t.title||"")} ${t.artist?"- "+esc(t.artist):""}</td>
+    <td data-label="备注" class="muted">${esc(cnErr(t.error||""))}</td>
+    <td data-label="操作"><button class="secondary" onclick="openDetail('${esc(t.path).replace(/'/g,"\\'")}')">编辑</button>
+        <button class="secondary" onclick="unskipOne('${esc(t.path).replace(/'/g,"\\'")}')">恢复处理</button>
+        <button class="danger" onclick="confirmDelete('${esc(t.path).replace(/'/g,"\\'")}','${esc(t.name).replace(/'/g,"\\'")}','跳过')">删除</button></td>
+  </tr>`).join("") : '<tr><td colspan="4" class="empty">没有跳过的歌曲</td></tr>';
+  $("skip_pager").innerHTML = pagerHtml("skip", d.total, st.page, per);
+}
+async function unskipOne(file){
+  await api("/api/tasks/unskip", {method:"POST"}); msg("已恢复为待人工"); loadSkip(); loadStats();
+}
+async function unskipAll(){
+  if(!confirm("把全部跳过的歌曲恢复为待人工？")) return;
+  await api("/api/tasks/unskip", {method:"POST"}); msg("已全部恢复"); loadSkip(); loadStats();
+}
+
+// ---------------- 错误页面 ----------------
+async function loadError(){
+  const st = pageState.error, per = 100;
+  const d = await api(`/api/tasks?status=error&limit=${per}&offset=${st.page*per}`);
+  const tb = $("errorTable").querySelector("tbody");
+  tb.innerHTML = d.items.length ? d.items.map(t => `<tr>
+    <td data-label="文件"><b>${esc(t.name)}</b><div class="muted">${esc(t.path)}</div></td>
+    <td data-label="错误信息"><div class="err-detail">${esc(cnErr(t.error||"未知错误"))}</div></td>
+    <td data-label="操作"><button class="secondary" onclick="openDetail('${esc(t.path).replace(/'/g,"\\'")}')">编辑</button></td>
+  </tr>`).join("") : '<tr><td colspan="3" class="empty">没有错误记录</td></tr>';
+  $("error_pager").innerHTML = pagerHtml("error", d.total, st.page, per);
+}
+async function retryErrors(){
+  await api("/api/tasks/retry-errors", {method:"POST"}); msg("已把错误任务恢复为待处理"); loadError(); loadStats();
+}
+async function reprocessErrors(){
+  if(!confirm("对错误队列里的这几首歌重新刮削（只刮这几首，不涉及其它歌曲）？")) return;
+  const r = await api("/api/reprocess-errors", {method:"POST"});
+  if(r.requeued === 0){ msg("当前没有错误歌曲"); loadError(); return; }
+  msg(`已重刮 ${r.requeued} 首错误歌曲`);
+  loadError(); loadStats(); loadAutoWrite();
+}
+
+// ---------------- 删除任务（人工辅助/跳过队列） ----------------
+let delFile = "";
+async function confirmDelete(file, name, from){
+  delFile = file;
+  $("delTitle").textContent = "删除确认： " + name;
+  $("delBody").innerHTML =
+    `<b style="color:var(--err)">⚠ 此操作不可撤销！</b><br>` +
+    `歌曲：<b>${esc(name)}</b><br>路径：<span class="muted">${esc(file)}</span><br><br>` +
+    `请选择删除方式：<br>` +
+    `① <b>只删除任务</b> — 只把这首歌从${from}队列移除，音乐文件保留在磁盘上；<br>` +
+    `② <b>删除任务 + 文件本体</b> — 任务和磁盘上的音乐文件都会删除，无法找回。`;
+  $("delModal").classList.add("open");
+  document.body.style.overflow = "hidden";   // 防止触摸穿透滚动
+}
+function closeDel(){ $("delModal").classList.remove("open"); delFile = "";
+  document.body.style.overflow = ""; }
+async function doDeleteTask(deleteFile){
+  const f = delFile;
+  if(!f) return;
+  closeDel();
+  try{
+    const r = await api("/api/tasks/delete", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({file: f, delete_file: deleteFile})});
+    msg(deleteFile ? "已删除任务和音乐文件本体" : "已删除任务（音乐文件已保留）");
+    loadPending(); loadSkip(); loadStats(); refreshCurrent();
+  }catch(e){ msg("删除失败：" + (e.message||e)); }
+}
+
+// ---------------- 歌曲详情弹窗（编辑 + 查看/预览 整合） ----------------
+const VIEW_FIELDS = [["title","标题"],["artist","歌手"],["album","专辑"],["album_artist","专辑艺人"],
+  ["year","年份"],["genre","流派"],["track","曲目号"],["disc","碟号"],["company","唱片公司"],
+  ["language","语言"],["cover","封面"],["lyrics","歌词"]];
+let editFile = "";                 // 当前文件路径
+let editCands = [];                // 当前文件候选列表
+let editSelSong = "";              // 选中的候选 songmid（用于"查看字段"）
+const editCandidates = {};         // 字段刮削候选缓存
+
+async function openDetail(file, songmid){
+  editFile = file; editCandidates.sources = null; editSelSong = songmid || "";
+  fcPromise = null;   // 每次打开新文件重置 field-candidates 缓存
+  const d = await api("/api/song-detail?file=" + encodeURIComponent(file));
+  $("dtTitle").textContent = "歌曲详情： " + d.name;
+  $("dtPath").textContent = d.file;
+  // 试听区：播放本地音频 + 显示文件内嵌歌词
+  const audio = $("dtAudio");
+  audio.src = BASE + "api/stream/" + encodeURIComponent(file);
+  const ext = (file.split(".").pop()||"").toLowerCase();
+  const lyrBox = $("dtLyrics");
+  vmLrcLines = []; vmLrcEls = []; vmLrcIdx = -1;
+  if(ext === "ape"){ lyrBox.textContent = "⚠ APE 格式浏览器不支持播放，仅 mp3/flac/ogg 可试听"; }
+  else if(d.lyrics){ renderDetailLrc(d.lyrics, "▌原·内嵌歌词"); }
+  else{ lyrBox.textContent = "（文件内无内嵌歌词）"; }
+  audio.ontimeupdate = function(){
+    if(!vmLrcLines.length) return;
+    let idx = 0;
+    for(let i=0;i<vmLrcLines.length;i++){ if(vmLrcLines[i].t <= this.currentTime) idx = i; else break; }
+    vmLrcEls.forEach((el,i)=> el.className = "lrc-line" + (i===idx ? " active" : ""));
+    const box = $("dtLyrics");
+    const el = vmLrcEls[idx];
+    if(box && el){
+      const lineH = el.offsetHeight || 20;
+      const boxH = box.clientHeight;
+      const top = el.offsetTop - box.offsetTop;
+      box.scrollTop = Math.max(0, top - (boxH - lineH) / 2);
+    }
+    vmLrcIdx = idx;
+  };
+  if(songmid){
+    // 点「查看/预览」：直接展开该候选的字段表（原内容 | 候选值输入框）
+    $("dtCands").innerHTML = "";
+    await renderCandidateDetail(songmid, d);
+  } else {
+    // 编辑入口：不显示任何候选，只显示文件已有内嵌数据（字段编辑模式）
+    editCands = d.candidates || [];
+    $("dtCands").innerHTML = "";
+    renderDetailFields(d);
+  }
+  $("detailModal").classList.add("open");
+  document.body.style.overflow = "hidden";   // 锁定底层滚动，防触摸穿透
+  audio.play().catch(()=>{});
+}
+function closeDetail(){
+  const a = $("dtAudio");
+  if(a){ a.pause(); a.removeAttribute("src"); a.load(); }
+  $("detailModal").classList.remove("open");
+  document.body.style.overflow = "";         // 恢复滚动
+  editCandidates.sources = null; editSelSong = "";
+  editCandsAll = {};                          // 清空候选缓存，防跨文件误用
+}
+function renderDetailLrc(lrc, label){
+  const box = $("dtLyrics");
+  vmLrcLines = parseLrc(lrc); vmLrcEls = []; vmLrcIdx = -1;
+  const lbl = $("dtLyrLabel");
+  if(lbl) lbl.textContent = label || "▌歌词";
+  if(!box) return;
+  if(vmLrcLines.length) box.innerHTML = vmLrcLines.map(l=>`<div class="lrc-line">${esc(l.text)}</div>`).join("");
+  else box.textContent = "（该歌词无时间轴）";
+  vmLrcEls = Array.from(box.children);
+}
+function renderDetailCands(){
+  const box = $("dtCands");
+  if(!editCands.length){ box.innerHTML = '<div class="muted">（该文件暂无候选，可用字段区的「刮削候选」或返回队列点「重新搜索」）</div>'; return; }
+  box.innerHTML =
+    `<div class="muted" style="margin-bottom:4px"><b style="color:#333">候选列表</b>（点「查看字段」对比，点「选用」直接写入）</div>` +
+    editCands.map(c => `<div class="cand" style="margin:4px 0;padding:6px 10px">
+      ${coverHtml(c.albummid)}
+      <div class="info"><b>${esc(c.title)}</b> - ${esc(c.artist)}<br>
+        <span class="muted">专辑 ${esc(c.album||"-")} ｜ 年份 ${esc(c.year||"-")} ｜ 时长 ${Math.floor((c.duration||0)/60)}:${String((c.duration||0)%60).padStart(2,"0")}</span>
+        <span class="tag" style="background:#e7f3ff;color:var(--accent)">${esc(c.source||"")}</span></div>
+      <span class="score">${(c.score/100).toFixed(2)}</span>
+      <button class="secondary" onclick="viewCandidateFields('${esc(c.songmid).replace(/'/g,"\\'")}')">查看字段</button>
+      <button class="ok" onclick="decide('${esc(editFile).replace(/'/g,"\\'")}','${esc(c.songmid).replace(/'/g,"\\'")}')">选用</button>
+    </div>`).join("");
+}
+// 候选列表里点「查看字段」：切换到该候选的字段表
+async function viewCandidateFields(songmid){
+  editSelSong = songmid;
+  try{
+    const d = await api("/api/song-detail?file=" + encodeURIComponent(editFile));
+    await renderCandidateDetail(songmid, d);
+  }catch(e){ msg("加载失败：" + (e.message||e)); }
+}
+// 直接展开某个候选的完整字段表：
+// 每行 = 勾选框 + 字段名 + [原内容] + [候选值输入框(默认=候选值, 可编辑保存)]
+let fcPromise = null;   // field-candidates 前端缓存 Promise（同一次打开只请求一次）
+let lrcRequested = {};  // 防止歌词重复请求
+async function renderCandidateDetail(songmid, d){
+  editSelSong = songmid;
+  let full = null;
+  // 延迟优化：先用 song-detail 已有候选基础字段渲染（零等待），
+  // field-candidates 后台加载后自动补全完整字段（genre/company/cover 等）
+  const baseCand = (d.candidates||[]).find(x => x.songmid === songmid);
+  full = baseCand ? {
+    title: baseCand.title, artist: baseCand.artist, album: baseCand.album,
+    date: baseCand.year, cover_url: "", lyrics: "", genre: "", publisher: "",
+    language: "", album_artist: "", track: "", disc: "",
+    song_id: songmid, album_id: baseCand.albummid, duration: baseCand.duration,
+    source: baseCand.source,
+  } : null;
+  // 立即渲染主体（不等待任何网络），弹窗可马上打开
+  renderCandidateDetailHtml(songmid, d, full);
+  // 后台等完整字段，到了就补全刷新（不阻塞弹窗）
+  if(!fcPromise){
+    fcPromise = api("/api/field-candidates?file=" + encodeURIComponent(editFile))
+      .then(r => r.sources || {})
+      .catch(() => ({}));
+  }
+  fcPromise.then(sources => {
+    for(const src of Object.keys(sources||{})){
+      const m = (sources[src]||[]).find(x => x.song_id === songmid);
+      if(m){ full = m; break; }
+    }
+    renderCandidateDetailHtml(songmid, d, full, true);
+  });
+}
+function renderCandidateDetailHtml(songmid, d, full, completed){
+  if(!full){
+    const c = (d.candidates||[]).find(x => x.songmid === songmid);
+    if(!c){ $("dtFields").innerHTML = '<div class="muted">候选数据缺失，请刷新队列后重试</div>'; return; }
+    full = {title:c.title, artist:c.artist, album:c.album, date:c.year, cover_url:"",
+            lyrics:"", genre:"", publisher:"", language:"", album_artist:"",
+            track:"", disc:"", song_id:songmid, album_id:c.albummid, duration:c.duration};
+  }
+  if(full && full.lyrics) renderDetailLrc(full.lyrics, "▌候选歌词");
+  const tags = (d.tags) || {};
+  // 候选字段名 -> 文件标签键（显示"原内容"用）
+  const candKey = {title:"title", artist:"artist", album:"album", album_artist:"album_artist",
+    year:"date", genre:"genre", track:"track", disc:"disc", company:"publisher",
+    language:"language"};
+  // 试听区候选信息：候选时长 vs 文件时长，方便人工对比
+  const fmtDur = (s) => { s = parseInt(s||0,10); return s ? `${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}` : "-"; };
+  const fileDur = d.duration || 0;
+  const candDur = full.duration || (d.candidates||[]).find(x=>x.songmid===songmid)?.duration || 0;
+  let durInfo = `<b style="color:#333">候选信息：</b>${esc(full.title||"")} - ${esc(full.artist||"")} ｜ 候选时长 ${fmtDur(candDur)} ｜ 文件时长 ${fmtDur(fileDur)}`;
+  if(candDur && fileDur){
+    const diff = Math.abs(candDur - fileDur);
+    durInfo += ` ｜ <b style="color:${diff<=30?"var(--ok)":"var(--warn)"}">相差 ${diff} 秒</b>`;
+  }
+  $("dtCandInfo").innerHTML = durInfo;
+  // 候选封面 URL：优先 full.cover_url；没有或加载失败则用 albummid 拼 QQ 封面兜底
+  const candAlbumMid = full.album_id || (d.candidates||[]).find(x=>x.songmid===songmid)?.albummid || "";
+  const candCoverUrl = full.cover_url || coverUrl(candAlbumMid);
+  let html = `<div style="border:1px solid #cfe3ff;border-radius:8px;padding:8px 10px;margin:6px 0;background:#f4f9ff">
+    <div class="muted" style="margin-bottom:4px"><b style="color:var(--accent)">候选「${esc(full.title||"")} - ${esc(full.artist||"")}」的字段</b><br>
+    每行：<b>原内容</b> = 文件当前标签；<b>候选值</b> = 该候选携带的内容（可修改后点「保存」，或勾选后点下方「选用」一并写入）</div>`;
+  for(const [k, label] of VIEW_FIELDS){
+    const candVal = (k === "cover") ? candCoverUrl : String(full[k]||"");
+    const origVal = (k === "cover") ? (d.cover_base64||"")
+      : (k === "lyrics") ? (d.lyrics||"")
+      : String((tags[candKey[k]]||""));
+    // 原内容显示：封面/歌词显示图片或文本；其它字段最多 40 字
+    let origHtml;
+    if(k === "cover"){
+      origHtml = origVal ? `<img src="${esc(origVal)}" style="width:40px;height:40px;border-radius:3px;object-fit:cover">` : '<span class="muted">无</span>';
+    } else if(k === "lyrics"){
+      origHtml = origVal ? `<span title="${esc(origVal)}">${esc(String(origVal).slice(0,80))}${origVal.length>80?"…":""}</span>` : '<span class="muted">无</span>';
+    } else {
+      origHtml = origVal ? esc(String(origVal).slice(0,40)) : '<span class="muted">无</span>';
+    }
+    if(k === "lyrics"){
+      // 歌词：原内嵌歌词 与 候选歌词 两个文本框，明显区分
+      html += `<div class="field-row" style="border-bottom:1px dashed #eef;padding:6px 0">
+        <label style="color:#333;min-width:74px;flex-shrink:0;font-size:13px;display:inline-flex;align-items:center;gap:4px"><input type="checkbox" id="vf_${songmid}_${k}" checked> ${label}</label>
+        <div style="flex:1;min-width:0;display:flex;gap:10px;flex-wrap:wrap">
+          <div style="flex:1;min-width:160px">
+            <div class="muted" style="margin-bottom:2px"><b style="color:#8a6d3b">▌原·内嵌歌词</b>（文件里已有的）</div>
+            <textarea id="or_${songmid}_${k}" style="width:100%;min-height:80px;font-size:12px;background:#fdf8ec;border:1px solid #e8d5a0" placeholder="（文件无内嵌歌词）">${esc(d.lyrics||"")}</textarea>
+          </div>
+          <div style="flex:1;min-width:160px">
+            <div class="muted" style="margin-bottom:2px"><b style="color:var(--accent)">▌候选歌词</b>（该候选提供的，可编辑）</div>
+            <textarea id="cf_${songmid}_${k}" style="width:100%;min-height:80px;font-size:12px" placeholder="正在加载候选歌词…"></textarea>
+          </div>
+        </div>
+        <button class="secondary" style="font-size:11px;padding:4px 8px" onclick="saveCandidateField('${esc(songmid).replace(/'/g,"\\'")}','${k}')">保存候选歌词</button>
+      </div>`;
+      continue;
+    }
+    // 字段行：checkbox+字段名 与 原值 分开两个弹性块，避免重叠
+    html += `<div class="field-row" style="border-bottom:1px dashed #eef;padding:6px 0;display:flex;align-items:center;flex-wrap:wrap;gap:6px 8px">
+      <label style="color:#333;flex:0 0 auto;font-size:13px;display:inline-flex;align-items:center;gap:4px"><input type="checkbox" id="vf_${songmid}_${k}" checked> ${label}</label>
+      <span style="flex:1 1 120px;min-width:90px;font-size:12px;color:#666;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:default" title="${esc(k==="cover"?"":String(origVal).slice(0,300))}"><span class="muted">原:</span> ${origHtml}</span>
+      <span style="flex:2 1 140px;min-width:110px;display:flex;align-items:center;gap:6px">${k==="cover"
+        ? (candVal ? `<img src="${esc(candVal)}" style="width:44px;height:44px;border-radius:4px;object-fit:cover;flex-shrink:0" onerror="this.style.display='none'">` : '<span class="muted">无</span>')
+        : `<input type="text" id="cf_${songmid}_${k}" value="${esc(candVal)}" style="flex:1;min-width:0;width:auto;font-size:13px" placeholder="候选无此字段">`}
+        ${k!=="cover" ? `<button class="secondary" style="font-size:11px;padding:4px 8px;flex-shrink:0" onclick="saveCandidateField('${esc(songmid).replace(/'/g,"\\'")}','${k}')">保存</button>` : ""}
+      </span>
+    </div>`;
+  }
+  html += `<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+      <button class="ok" onclick="decide('${esc(editFile).replace(/'/g,"\\'")}','${esc(songmid).replace(/'/g,"\\'")}',false,getViewFields('${esc(songmid).replace(/'/g,"\\'")}'))">选用（写入勾选字段）</button>
+      <button class="warn" onclick="markDone('${esc(editFile).replace(/'/g,"\\'")}')">💾 直接记忆到已人工（不选用）</button>
+      <button class="secondary" onclick="editSelSong='';renderDetailFieldsFromCurrent()">切换为编辑模式</button>
+    </div></div>`;
+  $("dtFields").innerHTML = html;
+  // 候选歌词：每次渲染都尝试填充编辑框（避免二次刷新覆盖后残留"正在加载"）；
+  // 有缓存直接用，无缓存才发一次请求（lrcRequested 防重复）
+  if(VIEW_FIELDS.some(f=>f[0]==="lyrics")){
+    const ta = $("cf_" + songmid + "_lyrics");
+    if(ta){
+      const cached = lyricsCache[songmid];
+      if(cached !== undefined){
+        ta.value = cached||""; ta.placeholder = cached ? "" : "候选无歌词，可手动输入";
+        if(cached) renderDetailLrc(cached, "▌候选歌词");
+      } else if(!lrcRequested[songmid]){
+        lrcRequested[songmid] = true;
+        api("/api/lyrics/" + songmid + "?" + new URLSearchParams(
+            {source: full.source||"", title: full.title||"", artist: full.artist||""}))
+          .then(dd => {
+            const l = dd.lyrics||""; lyricsCache[songmid] = l;
+            const t2 = $("cf_" + songmid + "_lyrics");
+            if(t2){ t2.value = l; t2.placeholder = l ? "" : "候选无歌词，可手动输入"; }
+            if(l) renderDetailLrc(l, "▌候选歌词");
+          })
+          .catch(() => { const t3 = $("cf_" + songmid + "_lyrics"); if(t3) t3.placeholder = "歌词加载失败，可手动输入"; });
+      }
+    }
+  }
+}
+// 直接记忆到已人工：不选用、不写入，标记 manual_done + 永久记忆
+async function markDone(file){
+  if(!confirm("直接记忆到已人工？\n\n不会写入任何候选字段（文件内嵌元数据保持不变），只把这首歌标记为已人工处理并加入永久记忆，之后刮削自动跳过。\n\n适合：文件内嵌的元数据已经很好，不需要选用候选。")) return;
+  try{
+    await api("/api/mark-done", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({file})});
+    msg("已记忆到已人工（未写入任何字段）");
+    closeDetail();
+    loadPending(); loadStats(); refreshCurrent();
+  }catch(e){ msg("操作失败：" + (e.message||e)); }
+}
+// 保存候选字段表中的某个字段（输入框内容 → 写入文件）
+async function saveCandidateField(songmid, field){
+  const input = $("cf_" + songmid + "_" + field);
+  if(!input) return;
+  const value = input.value.trim();
+  if(!value && field !== "lyrics"){ msg("值为空，未保存"); return; }
+  try{
+    await api("/api/field-write", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({file: editFile, field, value})});
+    msg("已保存「" + (VIEW_FIELDS.find(f=>f[0]===field)||[])[1] + "」");
+  }catch(e){ msg("保存失败：" + (e.message||e)); }
+}
+function getViewFields(songmid){
+  return VIEW_FIELDS.filter(([k]) => { const el = $("vf_" + songmid + "_" + k); return el ? el.checked : false; }).map(([k]) => k);
+}
+function renderDetailFieldsFromCurrent(){
+  const panel = $("candfieldpanel");
+  if(panel) panel.remove();
+  editSelSong = "";
+  // 重新读取当前文件标签刷新字段区（回到编辑模式）
+  api("/api/song-detail?file=" + encodeURIComponent(editFile)).then(d => {
+    editCands = d.candidates || [];
+    renderDetailCands();
+    renderDetailFields(d);
+  }).catch(()=>{});
+}
+function renderDetailFields(d){
+  const tags = d.tags || {};
+  let html = '<div class="muted" style="margin:8px 0 4px"><b style="color:#333">字段编辑</b>（手输保存，或「刮削候选」从候选里取该字段）</div>';
+  for(const [key, label, ckey] of EDIT_FIELDS){
+    let cur = "";
+    if(key === "cover"){
+      cur = d.cover_base64
+        ? `<img src="${d.cover_base64}" style="width:56px;height:56px;border-radius:4px;object-fit:cover">`
+        : '<span class="muted">（无封面）</span>';
+      html += `<div class="field-row" id="frow-${key}">
+        <span class="fname">${label}</span>
+        <span class="fval">${cur}</span>
+        <input type="file" id="covfile-${key}" accept="image/png,image/jpeg,image/webp" style="width:150px;font-size:12px">
+        <button class="secondary" onclick="uploadCover()">上传图片</button>
+        <button class="secondary" onclick="scrapeField('${key}')">刮削候选</button>
+        <span id="candbox-${key}" style="width:100%"></span>
+      </div>`;
+      continue;
+    }
+    if(key === "lyrics"){
+      cur = (d.lyrics || "").slice(0, 80) + (d.lyrics && d.lyrics.length > 80 ? "…" : "");
+      html += `<div class="field-row" id="frow-${key}">
+        <span class="fname">${label}</span>
+        <span class="fval">${esc(cur) || '<span class="muted">（空）</span>'}</span>
+        <button class="secondary" onclick="scrapeField('${key}')">刮削候选</button>
+        <span id="candbox-${key}" style="width:100%"></span>
+        <textarea id="input-${key}" placeholder="手动输入歌词（LRC 或纯文本）…">${esc(d.lyrics||"")}</textarea>
+        <button class="ok" onclick="saveField('${key}')">保存</button>
+      </div>`;
+      continue;
+    }
+    const v = tags[ckey === "date" ? "date" : (ckey === "track_total" ? "track_total" : ckey)] || "";
+    const val = key === "year" ? (tags.date || "") : v;
+    html += `<div class="field-row" id="frow-${key}">
+      <span class="fname">${label}</span>
+      <span class="fval">${esc(val) || '<span class="muted">（空）</span>'}</span>
+      <button class="secondary" onclick="scrapeField('${key}')">刮削候选</button>
+      <input type="text" id="input-${key}" value="${esc(val)}" style="width:200px">
+      <button class="ok" onclick="saveField('${key}')">保存</button>
+      <span id="candbox-${key}" style="width:100%"></span>
+    </div>`;
+  }
+  $("dtFields").innerHTML = html;
+}
+
+// 字段候选缓存：field -> [完整候选对象]（按钮只传 song_id，值点按时从这取，
+// 避免把歌词等长文本内联进 onclick 导致引号/换行截断脚本）
+let editCandsAll = {};
+async function scrapeField(field){
+  const box = $("candbox-" + field);
+  box.innerHTML = '<div class="muted">正在搜索候选（每个勾选源前 10 条）…</div>';
+  try{
+    if(!editCandidates.sources){
+      editCandidates.sources = (await api("/api/field-candidates?file=" + encodeURIComponent(editFile))).sources || {};
+    }
+    const srcs = editCandidates.sources;
+    const keys = Object.keys(srcs);
+    if(!keys.length){ box.innerHTML = '<div class="muted">没有可用的数据源候选（请先在配置页勾选源，并确保文件名是「歌曲名-歌手」格式）</div>'; return; }
+    // 拍平所有源候选，供 applyCandidate 按 song_id 取值
+    const all = [];
+    for(const src of keys) all.push(...(srcs[src]||[]));
+    editCandsAll[field] = all;
+    let html = '<div class="candlist">';
+    for(const src of keys){
+      html += `<div class="src-title">${esc(src)}（${srcs[src].length} 条）</div>`;
+      for(const m of srcs[src]){
+        const fieldVal = m[field === "year" ? "date" : field] || "";
+        const cover = field === "cover" ? (m.cover_url ? `<img src="${esc(m.cover_url)}" onerror="this.style.display='none'">` : "") : "";
+        const score = m.confidence != null ? (m.confidence/100).toFixed(2) : "";
+        const sid = esc(String(m.song_id||"")).replace(/'/g,"\\'");
+        html += `<div class="canditem">
+          ${cover}
+          <span><b>${esc(m.title)}</b> - ${esc(m.artist)}</span>
+          <span class="muted">专辑:${esc(m.album||"-")} 年份:${esc(m.date||"-")} 得分:${score}</span>
+          <span class="tag" style="background:#e7f3ff;color:var(--accent)">${fieldVal ? esc(String(fieldVal).slice(0,30)) : "（无此字段）"}</span>
+          <button class="ok" onclick="applyCandidate('${field}','${sid}')">用于此字段</button>
+        </div>`;
+      }
+    }
+    html += '</div>';
+    box.innerHTML = html;
+  }catch(e){ box.innerHTML = `<div class="muted">搜索失败：${esc(e.message||e)}</div>`; }
+}
+
+async function applyCandidate(field, songid){
+  // 从候选缓存里按 song_id 取完整对象，避免歌词等长文本进 onclick 被截断
+  const cand = (editCandsAll[field]||[]).find(x => String(x.song_id||"") === songid);
+  if(!cand){ msg("候选数据丢失，请重新刮削候选"); return; }
+  let value = cand[field === "year" ? "date" : field] || "";
+  if(field === "cover") value = cand.cover_url || "";
+  if(field === "lyrics" && !value){ msg("该候选无歌词"); return; }
+  if(!value){ msg("该候选此字段为空，无法应用"); return; }
+  try{
+    await api("/api/field-write", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({file: editFile, field, value})});
+    msg("已写入「" + FIELD_LABELS[field] + "」");
+    refreshCurrent(); openDetail(editFile);
+  }catch(e){ msg("写入失败：" + (e.message||e)); }
+}
+
+async function saveField(field){
+  let value = $("input-" + field).value;
+  if(field === "cover") { msg("封面请用上传或候选"); return; }
+  if(!value.trim() && field !== "lyrics"){ msg("值不能为空"); return; }
+  try{
+    await api("/api/field-write", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({file: editFile, field, value})});
+    msg("已保存「" + FIELD_LABELS[field] + "」");
+    refreshCurrent(); openDetail(editFile);
+  }catch(e){ msg("保存失败：" + (e.message||e)); }
+}
+
+async function uploadCover(){
+  const input = document.querySelector('#frow-cover input[type=file]');
+  if(!input.files || !input.files[0]){ msg("请先选择图片文件"); return; }
+  const fd = new FormData();
+  fd.append("file", editFile);
+  fd.append("image", input.files[0]);
+  try{
+    const r = await fetch(BASE + "api/cover-upload", {method:"POST", body: fd});
+    const text = await r.text().catch(()=> "");
+    if(!r.ok){
+      let detail = text;
+      try { const j = JSON.parse(text); if(j && j.detail) detail = j.detail; } catch(e){}
+      throw new Error(detail || ("HTTP " + r.status));
+    }
+    msg("封面已上传写入"); refreshCurrent(); openDetail(editFile);
+  }catch(e){ msg("封面上传失败：" + (e.message||e)); }
+}
+
+function refreshCurrent(){
+  const active = document.querySelector(".page.active");
+  if(active) ({total:loadTotal, autowrite:loadAutoWrite, pending:loadPending,
+    manualdone:loadManualDone, skip:loadSkip, error:loadError, config:()=>{}})[active.id.replace("page-","")]();
+}
+
+// ---------------- 歌词解析（查看候选弹窗用） ----------------
+let vmLrcLines = [], vmLrcEls = [], vmLrcIdx = -1;   // 查看弹窗专用歌词同步状态
+function parseLrc(lrc){
+  const lines = [];
+  for(const line of String(lrc||"").split("\n")){
+    const times = [];
+    const re = /\[(\d+):(\d+(?:\.\d+)?)\]/g;
+    let m;
+    while((m = re.exec(line))) times.push(parseFloat(m[1])*60 + parseFloat(m[2]));
+    const text = line.replace(/\[\d+:\d+(?:\.\d+)?\]/g,"").trim();
+    if(times.length && text) for(const t of times) lines.push({t, text});
+  }
+  lines.sort((a,b)=>a.t-b.t);
+  return lines;
+}
+
+async function showLyrics(songmid, btn, cand){
+  try{
+    let lrc = lyricsCache[songmid];
+    if(!lrc){
+      const d = await api("/api/lyrics/" + songmid + "?" + new URLSearchParams(
+        {source: (cand&&cand.source)||"", title: (cand&&cand.title)||"", artist: (cand&&cand.artist)||""}));
+      lrc = d.lyrics; lyricsCache[songmid] = lrc;
+    }
+    lyricsOpen.add(songmid);
+    const box = document.createElement("div");
+    box.style.cssText = "margin-top:6px;max-height:180px;overflow:auto;background:#f8f9fa;padding:8px;border-radius:4px;font-size:12px;white-space:pre-wrap;width:100%";
+    box.textContent = lrc;
+    btn.closest(".cand").appendChild(box);
+    btn.disabled = true; btn.textContent = "歌词已显示";
+  }catch(e){ msg("歌词获取失败：" + (e.message || e)); }
+}
+
+// ---------------- 操作按钮 ----------------
+async function scan(){
+  const r = await api("/api/scan", {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({path: $("music_dir").value, recursive: $("recursive").checked})});
+  msg(`扫描完成：共 ${r.total} 个文件，新增 ${r.added} 个待处理`);
+  loadStats(); loadTotal();
+}
+async function run(){ await api("/api/run", {method:"POST"}); msg("刮削已启动"); poll(); }
+async function stop(){ await api("/api/stop", {method:"POST"}); msg("已暂停"); }
+async function resetTasks(){
+  if(!confirm("清空所有任务与决策记录？")) return;
+  await api("/api/tasks/reset", {method:"POST"}); loadStats(); refreshCurrent();
+}
+async function refresh(file){
+  try{
+    const r = await api("/api/refresh/" + encodeURIComponent(file));
+    if(r.write_error){ msg("找到高分候选但写入失败：" + r.write_error); }
+    else if(r.auto_written){ msg("✅ 已自动写入（重新搜索命中高分候选，直接完成写入）"); }
+    else{ msg("已重新搜索（未达阈值，仍留在人工队列）"); }
+  }catch(e){ msg("重新搜索失败：" + (e.message||e)); }
+  loadPending(); loadStats(); refreshCurrent();
+}
+async function recognize(file){
+  msg("指纹识别中（约需 10-30 秒）...");
+  try{ await api("/api/recognize/" + encodeURIComponent(file)); msg("指纹识别完成，已加载候选"); }
+  catch(e){ msg("指纹识别失败：" + (e.message || e)); }
+  loadPending();
+}
+async function batchBest(){
+  if(!confirm("对队列中每个有候选的文件自动选用最高分候选？（无候选的留在队列）")) return;
+  try{
+    const r = await api("/api/decide/batch", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({mode:"best"})});
+    msg(`批量完成：${r.chosen} 个已选用最高分候选`); loadPending(); loadStats(); refreshCurrent();
+  }catch(e){ msg("批量操作失败：" + (e.message||e)); }
+}
+async function batchSkip(){
+  if(!confirm("跳过队列中所有文件（不再处理）？")) return;
+  try{
+    const r = await api("/api/decide/batch", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({mode:"skip"})});
+    msg(`已跳过 ${r.skipped} 个`); loadPending(); loadStats(); refreshCurrent();
+  }catch(e){ msg("批量操作失败：" + (e.message||e)); }
+}
+
+// ---------------- 配置页 ----------------
+async function loadConfig(){
+  const c = await api("/api/config");
+  $("threshold").value = c.threshold; $("thVal").textContent = c.threshold;
+  $("music_dir").value = c.music_dir;
+  $("recursive").checked = c.recursive === "1";
+  for(const k of ["write_title","write_artist","write_year","write_album",
+                  "write_album_artist","write_genre","write_track","write_disc",
+                  "write_company","write_language","write_cover","write_lyrics"]){
+    const el = $(k); if(el) el.checked = c[k] === "1";
+  }
+  $("write_enabled").checked = c.write_enabled === "1";
+  $("min_interval").value = c.min_interval;
+  $("concurrency").value = c.concurrency;
+  $("source_limit").value = c.source_limit || 10;
+  const idleMin = parseInt(c.idle_exit_minutes) || 0;
+  $("idle_exit_enable").checked = idleMin > 0;
+  $("idle_exit_minutes").value = idleMin > 0 ? idleMin : 30;
+  toggleIdleExit();
+  const mode = c.matching_mode === "fingerprint" ? "fingerprint" : "filename";
+  const radio = document.querySelector(`input[name="matching_mode"][value="${mode}"]`);
+  if (radio) radio.checked = true;
+  $("acoustid_key").value = c.acoustid_key || "";
+  try{
+    const s = await api("/api/sources");
+    const sel = $("source_checks");
+    const cur = (c.source || "").split(",").map(x=>x.trim()).filter(Boolean);
+    sel.innerHTML = "";
+    for(const name of (s.sources||[])){
+      const lbl = document.createElement("label");
+      const cb = document.createElement("input");
+      cb.type = "checkbox"; cb.value = name; cb.id = "src_" + name; cb.checked = cur.includes(name);
+      lbl.appendChild(cb); lbl.appendChild(document.createTextNode(" " + name));
+      sel.appendChild(lbl); sel.appendChild(document.createTextNode(" "));
+    }
+    if(!(s.sources||[]).length){
+      const tip = document.createElement("div");
+      tip.style.cssText = "color:#c0392b;margin:6px 0;line-height:1.6";
+      tip.innerHTML = "⚠ 暂无可用数据源：请把 <b>/vol2/1000/记录文档/数据源</b> 里的 .py 文件复制到插件目录" +
+                      "（" + (s.plugins_dir || "应用数据目录 plugins/") + "），然后在应用中心重启本应用。";
+      sel.appendChild(tip);
+    }
+    if(s.plugins_dir) $("plugins_dir_hint").textContent = "当前插件目录：" + s.plugins_dir;
+  }catch(e){}
+  $("plugins_dir").value = c.plugins_dir || "";
+}
+function toggleIdleExit(){
+  const on = $("idle_exit_enable").checked;
+  $("idle_exit_minutes").disabled = !on;
+  $("idle_off_btn").style.display = on ? "inline-block" : "none";
+}
+async function saveConfig(){
+  try{
+    const body = {
+      threshold: parseFloat($("threshold").value),
+      music_dir: $("music_dir").value,
+      recursive: $("recursive").checked,
+      write_enabled: $("write_enabled").checked,
+      min_interval: parseFloat($("min_interval").value),
+      concurrency: parseInt($("concurrency").value) || 1,
+      source_limit: parseInt($("source_limit").value) || 10,
+      idle_exit_minutes: $("idle_exit_enable").checked ? (parseInt($("idle_exit_minutes").value) || 30) : 0,
+      matching_mode: (document.querySelector('input[name="matching_mode"]:checked') || {}).value || "filename",
+      acoustid_key: $("acoustid_key").value.trim(),
+      source: Array.from(document.querySelectorAll('#source_checks input:checked')).map(x=>x.value).join(","),
+      plugins_dir: $("plugins_dir").value.trim(),
+    };
+    for(const k of ["write_title","write_artist","write_year","write_album",
+                    "write_album_artist","write_genre","write_track","write_disc",
+                    "write_company","write_language","write_cover","write_lyrics"]){
+      const el = $(k); if(el) body[k] = el.checked;
+    }
+    await api("/api/config", {method:"PUT", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)});
+    msg("配置已保存");
+  }catch(e){ msg("保存失败：" + (e.message || e)); }
+}
+$("threshold").oninput = () => $("thVal").textContent = $("threshold").value;
+
+// ---------------- 轮询 ----------------
+async function poll(){
+  try{
+    const s = await api("/api/status");
+    $("runState").textContent = s.running ? "● 刮削运行中" : "（空闲）";
+    $("runState").style.color = s.running ? "var(--ok)" : "#999";
+    if(s.error) msg("调度器错误: " + s.error);
+    await loadStats();
+    refreshCurrent();
+  }catch(e){}
+}
+setInterval(poll, 5000);
+(async function init(){
+  try{ await loadConfig(); await poll(); }
+  catch(e){ msg("页面初始化失败：" + (e.message || e)); }
+})();
+</script>
+</body>
+</html>

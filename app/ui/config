@@ -1,0 +1,14 @@
+{
+    ".url": {
+        "music-meta-web.main": {
+            "title": "音乐数据刮削",
+            "icon": "images/newicon_256.png",
+            "type": "iframe",
+            "protocol": "",
+            "gatewayPrefix": "/app/music-meta-web",
+            "gatewaySocket": "app.sock",
+            "url": "/app/music-meta-web",
+            "allUsers": true
+        }
+    }
+}

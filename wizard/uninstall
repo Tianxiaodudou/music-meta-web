@@ -1,0 +1,27 @@
+[
+  {
+    "stepTitle": "卸载应用",
+    "items": [
+      {
+        "type": "tips",
+        "helpText": "选择卸载时如何处理应用数据（候选记录、配置、插件目录内容）。"
+      },
+      {
+        "type": "radio",
+        "field": "wizard_delete_data",
+        "label": "卸载方式",
+        "initValue": "false",
+        "options": [
+          {
+            "label": "仅卸载，保留应用数据（音乐文件不受影响）",
+            "value": "false"
+          },
+          {
+            "label": "清除所有应用数据文件（不可恢复）！！！",
+            "value": "true"
+          }
+        ]
+      }
+    ]
+  }
+]

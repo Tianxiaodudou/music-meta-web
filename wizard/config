@@ -1,0 +1,43 @@
+[
+  {
+    "stepTitle": "音乐目录与插件目录",
+    "items": [
+      {
+        "type": "text",
+        "field": "wizard_music_dir",
+        "label": "音乐原文件目录（必填）",
+        "placeholder": "例如 /vol2/1000/音频库",
+        "rules": [
+          { "required": true, "message": "请填写音乐文件所在目录" },
+          { "pattern": "^/.*", "message": "请输入以 / 开头的绝对路径" }
+        ]
+      },
+      {
+        "type": "text",
+        "field": "wizard_plugins_dir",
+        "label": "数据源插件目录（必填）",
+        "placeholder": "例如 /vol1/@appdata/music-meta-web/plugins",
+        "rules": [
+          { "required": true, "message": "请填写数据源插件目录" },
+          { "pattern": "^/.*", "message": "请输入以 / 开头的绝对路径" }
+        ]
+      },
+      {
+        "type": "tips",
+        "helpText": "音乐目录与插件目录的实际读写权限，请在「应用中心 → 本应用 → 设置 → 授权目录」中授权相应路径。修改后保存会自动重启应用生效。"
+      }
+    ]
+  },
+  {
+    "stepTitle": "音频指纹（可选）",
+    "items": [
+      {
+        "type": "password",
+        "field": "wizard_acoustid_key",
+        "label": "AcoustID API Key（可选，可跳过）",
+        "placeholder": "留空跳过；免费申请: https://acoustid.org/new-application",
+        "rules": []
+      }
+    ]
+  }
+]

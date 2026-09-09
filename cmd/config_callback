@@ -1,0 +1,24 @@
+#!/bin/bash
+
+### This script is called after the user change environment variables in application setting page.
+### wizard/config 提交后：清空向导管理的三个配置项，再重启应用，
+### 使新的向导值（音乐目录/插件目录/AcoustID Key）由 run_server 重新写入。
+
+DIR="$(cd "$(dirname "$0")" && pwd)"
+VAR_DIR="${TRIM_PKGVAR:-/var/apps/music-meta-web/var}"
+VENV="${VAR_DIR}/venv/bin/python"
+
+"$DIR/main" stop >/dev/null 2>&1
+
+if [ -x "$VENV" ] && [ -n "${TRIM_USERNAME:-}" ]; then
+    runuser -u "${TRIM_USERNAME}" -- "$VENV" - "$VAR_DIR/app.db" <<'PY'
+import sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+db.execute("DELETE FROM config WHERE key IN ('music_dir','plugins_dir','acoustid_key')")
+db.commit()
+PY
+fi
+
+sleep 1
+"$DIR/main" start >/dev/null 2>&1
+exit 0

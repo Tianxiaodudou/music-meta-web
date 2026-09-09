@@ -1,0 +1,27 @@
+# 构建产物
+*.fpk
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 运行时数据
+*.db
+*.db-*
+*.migrated
+
+# 本地配置/密钥
+.trim-cli*/
+.ssh/
+*.local
+
+# 编辑器/系统
+.DS_Store
+.idea/
+.vscode/
+*.log
+
+# fnpack 临时构建目录
+.tmp/

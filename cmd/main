@@ -1,0 +1,149 @@
+#!/bin/bash
+# music-meta-web 生命周期：start / stop / status
+# 应用监听 Unix Socket（$TRIM_APPDEST/app.sock），由 fnOS 统一网关转发 /app/music-meta-web
+
+LOG_FILE="${TRIM_PKGVAR:-/var/apps/music-meta-web/var}/info.log"
+PID_FILE="${TRIM_PKGVAR:-/var/apps/music-meta-web/var}/app.pid"
+VAR_DIR="${TRIM_PKGVAR:-/var/apps/music-meta-web/var}"
+DEST_DIR="${TRIM_APPDEST:-/var/apps/music-meta-web/target}"
+SOCK_FILE="${DEST_DIR}/app.sock"
+
+# Python 运行时：优先飞牛 python311 应用，回退系统 python3
+if [ -x "/vol1/@appcenter/python311/bin/python3" ]; then
+    PYTHON="/vol1/@appcenter/python311/bin/python3"
+else
+    PYTHON="$(command -v python3 || echo /usr/bin/python3)"
+fi
+
+VENV_DIR="${VAR_DIR}/venv"
+REQ_FILE="${DEST_DIR}/server/requirements.txt"
+
+log_msg() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "${LOG_FILE}"
+}
+
+run_as_user() {
+    # cmd/main 由系统调用；root 时降权到包用户运行，非 root 直接执行
+    if [ "$(id -u)" = "0" ] && [ -n "${TRIM_USERNAME:-}" ]; then
+        runuser -u "${TRIM_USERNAME}" -- "$@"
+    else
+        "$@"
+    fi
+}
+
+prepare_venv() {
+    mkdir -p "${VAR_DIR}"
+    if [ ! -x "${VENV_DIR}/bin/python" ]; then
+        log_msg "创建 venv: ${VENV_DIR}"
+        run_as_user "${PYTHON}" -m venv "${VENV_DIR}"
+    fi
+    if ! run_as_user "${VENV_DIR}/bin/python" -c "import fastapi, uvicorn, mutagen, multipart" 2>/dev/null; then
+        log_msg "安装依赖（国内镜像源）..."
+        # 国内环境直接走镜像源链（腾讯→华为→清华→阿里），不先碰默认 PyPI
+        for MIRROR in \
+            "https://mirrors.cloud.tencent.com/pypi/simple" \
+            "https://repo.huaweicloud.com/repository/pypi/simple" \
+            "https://pypi.tuna.tsinghua.edu.cn/simple" \
+            "https://mirrors.aliyun.com/pypi/simple"; do
+            log_msg "尝试镜像: ${MIRROR}"
+            if run_as_user "${VENV_DIR}/bin/pip" install --timeout 20 --retries 1 -i "${MIRROR}" -r "${REQ_FILE}"; then
+                break
+            fi
+        done
+        if ! run_as_user "${VENV_DIR}/bin/python" -c "import fastapi, uvicorn, mutagen, multipart" 2>/dev/null; then
+            log_msg "依赖安装失败"
+            return 1
+        fi
+    fi
+}
+
+check_process() {
+    local pid=$1
+    if kill -0 "${pid}" 2>/dev/null; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+status() {
+    if [ -f "${PID_FILE}" ]; then
+        pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
+        if check_process "${pid}"; then
+            return 0
+        else
+            rm -f "${PID_FILE}"
+        fi
+    fi
+    return 1
+}
+
+start_process() {
+    if status; then
+        return 0
+    fi
+    prepare_venv
+    log_msg "启动应用 (socket=${SOCK_FILE}) ..."
+    # 安装向导值（wizard/install、wizard/config）→ 同名环境变量 → 转发给 run_server：
+    # 音乐目录（必填）、插件目录（必填）、AcoustID Key（可选，可留空）
+    MMW_DB="${VAR_DIR}/app.db" \
+    MMW_MUSIC_DIR="${wizard_music_dir:-}" \
+    MMW_PLUGINS_DIR="${wizard_plugins_dir:-}" \
+    MMW_ACOUSTID_KEY="${wizard_acoustid_key:-}" \
+    run_as_user nohup "${VENV_DIR}/bin/python" "${DEST_DIR}/server/run_server.py" "${SOCK_FILE}" \
+        >> "${LOG_FILE}" 2>&1 &
+    printf "%s" "$!" > "${PID_FILE}"
+    sleep 2
+    if status; then
+        log_msg "启动成功"
+        return 0
+    else
+        log_msg "启动失败，请查看日志"
+        rm -f "${PID_FILE}"
+        return 1
+    fi
+}
+
+stop_process() {
+    log_msg "停止应用 ..."
+    if [ -r "${PID_FILE}" ]; then
+        pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')
+        if check_process "${pid}"; then
+            kill -TERM "${pid}" >> "${LOG_FILE}" 2>&1
+        fi
+        rm -f "${PID_FILE}"
+    fi
+    # run_server.py 由 runuser 包裹启动，PID_FILE 记录的是 runuser 的 pid；
+    # 一并按命令行终止实际 Python 进程，避免每次重启残留一个实例
+    if command -v pkill >/dev/null 2>&1; then
+        pkill -TERM -f "${DEST_DIR}/server/run_server.py" 2>/dev/null
+        local count=0
+        while pkill -0 -f "${DEST_DIR}/server/run_server.py" >/dev/null 2>&1 && [ $count -lt 15 ]; do
+            sleep 1
+            count=$((count + 1))
+        done
+        pkill -KILL -f "${DEST_DIR}/server/run_server.py" 2>/dev/null
+        sleep 1
+    fi
+    rm -f "${SOCK_FILE}"
+    return 0
+}
+
+case $1 in
+start)
+    start_process
+    ;;
+stop)
+    stop_process
+    ;;
+status)
+    if status; then
+        exit 0
+    else
+        exit 3
+    fi
+    ;;
+*)
+    exit 1
+    ;;
+esac

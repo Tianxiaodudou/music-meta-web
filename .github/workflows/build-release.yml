@@ -1,0 +1,86 @@
+name: Build & Release fpk
+
+# 触发方式：
+#   1) 推送形如 v1.2.1 的 git tag（推荐，tag 名必须与 manifest 中 version 一致，去掉 v）
+#   2) 手动 workflow_dispatch（可选，用输入版本号打 Release）
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "要发布的版本号（须与 manifest 中 version 一致，如 1.2.1）"
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    name: Build fpk and publish Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download official fnpack
+        run: |
+          curl -fL -o /usr/local/bin/fnpack \
+            https://static2.fnnas.com/fnpack/fnpack-1.2.3-linux-amd64
+          chmod +x /usr/local/bin/fnpack
+          fnpack --help | head -3
+
+      - name: Read version from manifest
+        id: version
+        run: |
+          VER="$(grep -E '^version[[:space:]]*=' manifest | head -1 | sed -E 's/^version[[:space:]]*=[[:space:]]*//' | tr -d ' \r')"
+          if [ -z "$VER" ]; then
+            echo "::error::无法从 manifest 读取 version"; exit 1
+          fi
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "manifest version -> $VER"
+
+      - name: Verify tag matches manifest version
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          TAG_VERSION: ${{ github.ref_name }}
+          MANIFEST_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          TV="${TAG_VERSION#v}"
+          echo "tag=$TAG_VERSION (strip v -> $TV), manifest=$MANIFEST_VERSION"
+          if [ "$TV" != "$MANIFEST_VERSION" ]; then
+            echo "::error::tag 版本 ($TV) 与 manifest version ($MANIFEST_VERSION) 不一致，拒绝发布"
+            exit 1
+          fi
+
+      - name: Build fpk
+        run: |
+          fnpack build --directory "$PWD"
+          ls -la music-meta-web.fpk
+
+      - name: Rename fpk with app name and version
+        run: |
+          VER="${{ steps.version.outputs.version }}"
+          mv music-meta-web.fpk "music-meta-web-${VER}.fpk"
+          echo "artifact: music-meta-web-${VER}.fpk"
+          ls -la "music-meta-web-${VER}.fpk"
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "music-meta-web v${{ steps.version.outputs.version }}"
+          tag_name: "v${{ steps.version.outputs.version }}"
+          body: |
+            ## music-meta-web v${{ steps.version.outputs.version }}
+
+            fnOS 原生应用「音乐数据刮削」安装包（GPL-3.0）。
+
+            ### 安装
+            下载本 Release 的 `music-meta-web-${{ steps.version.outputs.version }}.fpk`，
+            在飞牛 fnOS 应用中心 →「手动安装」中选择该文件即可。
+
+            > 由 GitHub Actions 在线使用官方 fnpack 编译并自动发布。
+          files: |
+            music-meta-web-${{ steps.version.outputs.version }}.fpk
+          fail_on_unmatched_files: true
