@@ -21,6 +21,17 @@ ACOUSTID_URL = "https://api.acoustid.org/v2/lookup"
 FPCALC_DEFAULT = "/usr/bin/fpcalc"
 
 
+def recognize(path: str, api_key: str,
+              fpcalc: str = FPCALC_DEFAULT) -> List[dict]:
+    """一步完成：计算指纹 → AcoustID 识别 → 返回歌曲候选列表。
+
+    数据源插件（qqmusic 的指纹模式）通过 musicmeta.fingerprint 调用它，
+    不要删除。
+    """
+    duration, fp = fingerprint_file(path, fpcalc)
+    return lookup_acoustid(fp, duration, api_key)
+
+
 def fingerprint_file(path: str, fpcalc: str = FPCALC_DEFAULT,
                      timeout: int = 180) -> Tuple[float, str]:
     """计算音频指纹，返回 (时长秒, fingerprint)。"""
@@ -82,8 +93,3 @@ def lookup_acoustid(fingerprint: str, duration: float, api_key: str,
     return results
 
 
-def recognize(path: str, api_key: str,
-              fpcalc: str = FPCALC_DEFAULT) -> List[dict]:
-    """一步完成：计算指纹 → AcoustID 识别 → 返回歌曲候选列表。"""
-    duration, fp = fingerprint_file(path, fpcalc)
-    return lookup_acoustid(fp, duration, api_key)

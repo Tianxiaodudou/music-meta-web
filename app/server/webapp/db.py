@@ -54,10 +54,6 @@ CREATE INDEX IF NOT EXISTS idx_manual_done_hash ON manual_done(file_hash);
 """
 
 DEFAULTS: Dict[str, str] = {
-    # 【已废弃】旧「最高分 ≥ 阈值才自动写入」的阈值（0~1）。
-    # 现在是否自动写入由第 4 步「文件名反推校验」决定（见 scheduler.match_file），
-    # 打分只用于候选排序；该配置仅为兼容旧库/旧前端保留，不再参与判定。
-    "threshold": "0.9",
     "music_dir": "",                 # 学习/刮削目录（安装向导必填；需在应用设置中授权读取）
     "recursive": "1",
     "write_enabled": "0",            # 安全开关：默认不写入（学习模式）
@@ -79,10 +75,9 @@ DEFAULTS: Dict[str, str] = {
     # 本安装包不内置数据源：全部来自插件目录（数据源文件见 /vol2/1000/记录文档/数据源/）
     "source": "",
     # 写入字段开关（默认全部写入）
-    "write_title": "1", "write_artist": "1", "write_year": "1",
-    "write_album": "1", "write_album_artist": "1", "write_genre": "1",
-    "write_track": "1", "write_disc": "1", "write_company": "1",
-    "write_language": "1", "write_cover": "1", "write_lyrics": "1",
+    # 生效字段：应用里唯一一份字段开关（勾选的字段才会显示，也才会被写入）
+    # 默认只勾选 歌名 / 歌手 / 封面图 / 歌词
+    "active_fields": "title,artist,cover,lyrics",
 }
 
 
@@ -110,6 +105,10 @@ def init_db() -> None:
         # 兼容旧库：补 candidates.verified 列（文件名反推校验结果）
         if "verified" not in ccols:
             c.execute("ALTER TABLE candidates ADD COLUMN verified INTEGER")
+        # 清理已废弃的配置键（旧版逐个字段的 write_* 开关与 threshold，
+        # 现由 active_fields 与「文件名反推校验」取代）
+        c.execute("DELETE FROM config WHERE key LIKE 'write\\_%' ESCAPE '\\' "
+                  "OR key='threshold'")
         for key, value in DEFAULTS.items():
             c.execute("INSERT OR IGNORE INTO config(key, value) VALUES(?, ?)",
                       (key, value))
@@ -179,13 +178,6 @@ def add_tasks(files: List[str]) -> int:
     return added
 
 
-def next_pending() -> Optional[sqlite3.Row]:
-    with connect() as c:
-        return c.execute(
-            "SELECT * FROM tasks WHERE status='pending' ORDER BY rowid LIMIT 1"
-        ).fetchone()
-
-
 def claim_next(scope: Optional[set] = None) -> Optional[dict]:
     """原子认领一个 pending 任务（并发 worker 安全），并置为 processing。
 
@@ -232,6 +224,16 @@ def update_task_status(path: str, status: str, *, score: Optional[float] = None,
             (status, score, title, artist, album, year, error, written, now, path))
 
 
+def set_status(path: str, status: str, error: str = "") -> int:
+    """只改任务状态（保留匹配结果/得分/已写入等字段），返回受影响行数。"""
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    with connect() as c:
+        cur = c.execute(
+            "UPDATE tasks SET status=?, error=?, updated_at=? WHERE path=?",
+            (status, error, now, path))
+        return cur.rowcount
+
+
 def task_stats() -> Dict[str, int]:
     with connect() as c:
         rows = c.execute(
@@ -240,14 +242,27 @@ def task_stats() -> Dict[str, int]:
     return stats
 
 
+#: 状态分组：「自动写入」这一档在界面上同时包含正在写入的 processing
+_STATUS_GROUPS = {"auto_ok": ("auto_ok", "processing")}
+
+
+def _status_cond(status: Optional[str]) -> tuple:
+    """状态过滤 → (SQL 片段, 参数)；status 为空表示不过滤。"""
+    if not status:
+        return "", []
+    keys = _STATUS_GROUPS.get(status, (status,))
+    if len(keys) == 1:
+        return "status=?", [status]
+    return f"status IN ({','.join('?' * len(keys))})", list(keys)
+
+
 def list_tasks(status: Optional[str] = None, limit: int = 200,
                offset: int = 0) -> List[dict]:
     """任务列表（分页：limit+offset）。"""
     q = "SELECT * FROM tasks"
-    params: list = []
-    if status:
-        q += " WHERE status=?"
-        params.append(status)
+    cond, params = _status_cond(status)
+    if cond:
+        q += " WHERE " + cond
     q += " ORDER BY rowid DESC LIMIT ? OFFSET ?"
     params.extend([limit, offset])
     with connect() as c:
@@ -257,10 +272,9 @@ def list_tasks(status: Optional[str] = None, limit: int = 200,
 
 def count_tasks(status: Optional[str] = None) -> int:
     q = "SELECT COUNT(*) AS n FROM tasks"
-    params: list = []
-    if status:
-        q += " WHERE status=?"
-        params.append(status)
+    cond, params = _status_cond(status)
+    if cond:
+        q += " WHERE " + cond
     with connect() as c:
         return c.execute(q, params).fetchone()["n"]
 
@@ -269,11 +283,12 @@ def search_tasks(q: str, status: Optional[str] = None, limit: int = 100,
                  offset: int = 0) -> List[dict]:
     """按文件名/路径模糊搜索任务（分页）。"""
     like = f"%{q}%"
-    params: list = [like, like]
     cond = "(name LIKE ? OR path LIKE ?)"
-    if status:
-        cond += " AND status=?"
-        params.append(status)
+    params: list = [like, like]
+    scond, sparams = _status_cond(status)
+    if scond:
+        cond += " AND " + scond
+        params.extend(sparams)
     params.extend([limit, offset])
     with connect() as c:
         rows = c.execute(
@@ -284,11 +299,12 @@ def search_tasks(q: str, status: Optional[str] = None, limit: int = 100,
 
 def count_search(q: str, status: Optional[str] = None) -> int:
     like = f"%{q}%"
-    params: list = [like, like]
     cond = "(name LIKE ? OR path LIKE ?)"
-    if status:
-        cond += " AND status=?"
-        params.append(status)
+    params: list = [like, like]
+    scond, sparams = _status_cond(status)
+    if scond:
+        cond += " AND " + scond
+        params.extend(sparams)
     with connect() as c:
         return c.execute(
             f"SELECT COUNT(*) AS n FROM tasks WHERE {cond}", params).fetchone()["n"]
@@ -330,36 +346,6 @@ def remove_manual_done(path: str) -> bool:
         cur = c.execute("DELETE FROM manual_done WHERE file_path=? OR file_hash=?",
                         (path, path))
         return cur.rowcount > 0
-
-
-def list_manual_done(limit: int = 100, offset: int = 0,
-                     q: str = "") -> List[dict]:
-    like = f"%{q}%"
-    params: list = [like, like, limit, offset]
-    with connect() as c:
-        rows = c.execute(
-            "SELECT * FROM manual_done WHERE (file_path LIKE ? OR file_hash LIKE ?) "
-            "ORDER BY done_at DESC LIMIT ? OFFSET ?", params).fetchall()
-    return [dict(r) for r in rows]
-
-
-def count_manual_done(q: str = "") -> int:
-    like = f"%{q}%"
-    with connect() as c:
-        return c.execute(
-            "SELECT COUNT(*) AS n FROM manual_done "
-            "WHERE (file_path LIKE ? OR file_hash LIKE ?)",
-            (like, like)).fetchone()["n"]
-
-
-def manual_done_hashes() -> set:
-    with connect() as c:
-        return {r["file_hash"] for r in c.execute("SELECT file_hash FROM manual_done")}
-
-
-def manual_done_paths() -> set:
-    with connect() as c:
-        return {r["file_path"] for r in c.execute("SELECT file_path FROM manual_done")}
 
 
 def is_manual_done(path: str) -> bool:
@@ -455,19 +441,4 @@ def requeue_status(status: str) -> int:
             c.execute("DELETE FROM candidates WHERE file_path=?", (r["path"],))
         cur = c.execute(
             "UPDATE tasks SET status='pending', error=NULL WHERE status=?", (status,))
-        return cur.rowcount
-
-
-def restore_manual_done(path: str) -> int:
-    """把单个已人工（manual_done）任务恢复为人工辅助（manual_pending）。
-
-    同时删除该文件的永久记忆与决策记录，使其可以重新参与人工选择/刮削。
-    返回受影响行数（0 表示该任务不是 manual_done 状态）。
-    """
-    with connect() as c:
-        c.execute("DELETE FROM manual_done WHERE file_path=?", (path,))
-        c.execute("DELETE FROM decisions WHERE file_path=?", (path,))
-        cur = c.execute(
-            "UPDATE tasks SET status='manual_pending', error=NULL, written=NULL "
-            "WHERE path=? AND status='manual_done'", (path,))
         return cur.rowcount

@@ -10,12 +10,12 @@ import os
 import threading
 import time
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, Response
-from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from . import db, scheduler
+from musicmeta.fields import FIELD_MAP, FIELDS, active_fields, parse_active
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
@@ -58,14 +58,6 @@ async def strip_gateway_prefix(request, call_next):
     return await call_next(request)
 
 
-@app.get("/api/activity")
-def activity():
-    """应用活动状态：最后一次请求时间（供空闲退出监控 / 调试）。"""
-    return {"last_request_ts": _last_request_ts,
-            "scraper_running": bool(scheduler.is_running()) if hasattr(scheduler, "is_running") else None,
-            "config": db.get_config()}
-
-
 @app.on_event("startup")
 def _startup() -> None:
     db.init_db()
@@ -90,22 +82,11 @@ def index():
 # ---------------- 配置 ----------------
 
 class ConfigBody(BaseModel):
-    threshold: float | None = None
     music_dir: str | None = None
     recursive: bool | None = None
     write_enabled: bool | None = None
-    write_cover: bool | None = None
-    write_artist: bool | None = None
-    write_year: bool | None = None
-    write_lyrics: bool | None = None
-    write_title: bool | None = None
-    write_album: bool | None = None
-    write_album_artist: bool | None = None
-    write_genre: bool | None = None
-    write_track: bool | None = None
-    write_disc: bool | None = None
-    write_company: bool | None = None
-    write_language: bool | None = None
+    #: 生效字段（勾选的字段才会显示、才会写入）；见 musicmeta.fields
+    active_fields: list[str] | None = None
     min_interval: float | None = None
     concurrency: int | None = None
     source_limit: int | None = None
@@ -118,7 +99,9 @@ class ConfigBody(BaseModel):
 
 @app.get("/api/config")
 def get_config():
-    return db.get_config()
+    cfg = db.get_config()
+    cfg["active_fields"] = ",".join(active_fields(cfg))
+    return cfg
 
 
 @app.get("/api/sources")
@@ -132,11 +115,24 @@ def get_sources():
     return {"sources": list_sources(), "plugins_dir": pdir}
 
 
+@app.get("/api/fields")
+def get_fields():
+    """可刮削字段清单（供设置页与手动刮削窗口使用）。"""
+    return {
+        "fields": [{"key": f.key, "label": f.label, "special": f.special}
+                   for f in FIELDS],
+        "active": active_fields(db.get_config()),
+    }
+
+
 @app.put("/api/config")
 def put_config(body: ConfigBody):
     patch = {}
     for name, val in body.dict(exclude_none=True).items():
-        patch[name] = str(val)
+        if name == "active_fields":
+            patch[name] = ",".join(parse_active(val))
+        else:
+            patch[name] = str(val)
     return db.set_config(patch)
 
 
@@ -171,31 +167,6 @@ def unskip_tasks():
     """撤销误批量跳过：skipped 恢复为 manual_pending。"""
     n = db.unskip_all()
     return {"restored": n}
-
-
-class RestoreBody(BaseModel):
-    file: str
-
-
-@app.post("/api/tasks/restore")
-def restore_task(body: RestoreBody):
-    """把单个已人工（manual_done）任务移回人工辅助队列。
-
-    同时删除永久记忆（哈希）与决策记录；任务回到 manual_pending，
-    可重新参与人工选择；文件本身不被修改。
-    """
-    path = body.file
-    if not path or not path.strip():
-        raise HTTPException(400, "缺少文件路径")
-    n = db.restore_manual_done(path)
-    if n == 0:
-        # 不是 manual_done 状态：检查是否手动队列，给明确提示
-        with db.connect() as c:
-            row = c.execute("SELECT status FROM tasks WHERE path=?", (path,)).fetchone()
-        if row:
-            raise HTTPException(400, f"该任务当前状态是「{row['status']}」，不是已人工，无需恢复")
-        raise HTTPException(404, "任务不存在")
-    return {"ok": True, "restored": n, "status": "manual_pending"}
 
 
 class DeleteTaskBody(BaseModel):
@@ -369,9 +340,6 @@ def _invalidate_filter_cache(path: str | None = None) -> None:
     else:
         with _filter_cache_lock:
             _filter_cache.clear()
-    # 数量统计缓存一并失效（下次请求重新统计）
-    with _filter_counts_lock:
-        _filter_counts_cache.pop("c", None)
 
 
 @app.get("/api/tasks")
@@ -420,78 +388,148 @@ def tasks(status: str | None = None, limit: int = 100, offset: int = 0,
     return {"total": total, "filtered_total": None, "items": rows}
 
 
-# 过滤条件 → 全部统计键（前端标签）
-_FILTER_COUNT_KEYS = ("no_lyrics", "no_cover", "no_title", "no_artist",
-                      "no_album", "no_year", "no_genre", "no_track")
-_filter_counts_cache: dict = {}   # {"ts": expire_ts, "counts": {...}}
-_filter_counts_lock = threading.Lock()
-_FILTER_COUNTS_TTL = 30.0         # 计数缓存 30 秒（暖标签缓存后重算也快）
+#: 允许人工指定的状态（与界面 6 种状态标签一致；processing 仅由调度器内部使用）
+MANUAL_STATUS = ("pending", "auto_ok", "manual_done", "manual_pending",
+                 "skipped", "error")
 
 
-def _counts_for_task_tags(tags, has_cover, has_lyrics) -> dict:
-    """根据单文件标签返回该文件满足哪些 no_* 条件（全 false 表示不满足任何）。"""
+class TaskStatusBody(BaseModel):
+    file: str
+    status: str
+
+
+@app.post("/api/task-status")
+def set_task_status(body: TaskStatusBody):
+    """手动指定某个文件的状态（队列里点状态标签弹出的菜单调用）。"""
+    path = (body.file or "").strip()
+    status = (body.status or "").strip()
+    if not path:
+        raise HTTPException(400, "缺少文件路径")
+    if status not in MANUAL_STATUS:
+        raise HTTPException(400, f"不支持的状态：{status}")
+    if status == "manual_done":
+        # 已人工：写入永久记忆（按内容哈希），后续刮削自动排除
+        try:
+            db.record_manual_done(path)
+        except Exception:
+            pass
+    elif status in ("pending", "manual_pending", "auto_ok"):
+        # 离开「已人工」时清掉永久记忆，否则下次扫描又会被排除
+        try:
+            db.remove_manual_done(path)
+        except Exception:
+            pass
+    if db.set_status(path, status) == 0:
+        raise HTTPException(404, "任务不存在")
+    return {"ok": True, "status": status}
+
+
+@app.post("/api/scrub/{file:path}")
+def scrub_file(file: str):
+    """手动刮削：现场按「生效数据源」重刮一遍，缓存候选并返回逐字段的当前值与候选值。
+
+    候选数量 = 每源 source_limit 条（设置页参数），与自动刮削同一套搜索/排序规则。
+    歌词不在这里返回正文（体积大），只给出候选列表，点选时再按 song_id 取。
+    """
+    import musicmeta.writer as _w
+    if not os.path.isfile(file):
+        raise HTTPException(400, f"文件不存在: {file}")
+    cfg = db.get_config()
+    active = active_fields(cfg)
+
+    res = scheduler.match_file(file, cfg, force_live=True)
+    metas = res.metas
+    if metas:
+        db.add_candidates(file, [scheduler._meta_to_dict(m) for m in metas])
+
+    try:
+        tags = _w.read_tags(file)
+    except Exception:
+        tags = {}
+    try:
+        cur_lyrics = _w.read_lyrics(file)
+    except Exception:
+        cur_lyrics = ""
+    try:
+        has_cover = bool(_w.read_picture(file))
+    except Exception:
+        has_cover = False
+
+    fields: list = []
+    for f in FIELDS:
+        if f.key not in active or f.special == "lyrics":
+            continue
+        current = ""
+        if f.special == "cover":
+            current = "（文件内已有封面）" if has_cover else ""
+        else:
+            current = str(tags.get(f.tag) or "")
+        cands: list = []
+        for m in metas:
+            if f.special == "cover":
+                value = (m.extra.get("cover_url") or "").strip()
+                if not value and m.album_id:
+                    # QQ 等源只给 album_id：按平台规则拼封面 URL（与写入下载路径一致）
+                    value = ("https://y.gtimg.cn/music/photo_new/"
+                             f"T002R500x500M000{m.album_id}.jpg")
+            else:
+                value = str(getattr(m, f.cand, "") or "").strip()
+            if not value:
+                continue
+            cands.append({"value": value, "source": m.source, "title": m.title,
+                          "artist": m.artist, "song_id": m.song_id})
+        fields.append({"key": f.key, "label": f.label, "special": f.special,
+                       "current": current, "candidates": cands})
+
+    lyrics_cands = [{"value": "", "source": m.source, "title": m.title,
+                     "artist": m.artist, "song_id": m.song_id}
+                    for m in metas if m.song_id]
+
     return {
-        "no_lyrics": not has_lyrics,
-        "no_cover": not has_cover,
-        "no_title": not tags.get("title"),
-        "no_artist": not tags.get("artist"),
-        "no_album": not tags.get("album"),
-        "no_year": not (tags.get("date") or tags.get("year")),
-        "no_genre": not tags.get("genre"),
-        "no_track": not (tags.get("track") or tags.get("track_total")),
+        "file": file, "name": os.path.basename(file),
+        "audio": f"api/stream/{file}",
+        "duration": scheduler._file_duration(file),
+        "active_fields": active,
+        "queries": res.queries,
+        "verified": len(res.verified),
+        "fields": fields,
+        "lyrics": {"active": "lyrics" in active, "current": cur_lyrics,
+                   "candidates": lyrics_cands},
     }
 
 
-@app.get("/api/filter-counts")
-def filter_counts():
-    """一次统计所有元数据过滤条件的歌曲数量（无歌词/无封面/无标题…）。
-
-    单遍遍历全部任务，每首歌读一次标签（走 _tag_cache 缓存，暖后秒级）；
-    结果缓存 30 秒。写操作（编辑/选用/封面上传）会自动失效重建。
-    """
-    now = time.time()
-    with _filter_counts_lock:
-        ent = _filter_counts_cache.get("c")
-        if ent and ent[0] > now:
-            return ent[1]
-    rows = db.list_tasks(limit=100000)
-    counts = {k: 0 for k in _FILTER_COUNT_KEYS}
-    for t in rows:
-        path = t["path"]
-        if not os.path.isfile(path):
-            continue
+@app.get("/api/cand-lyrics")
+def candidate_lyrics(song_id: str = "", source: str = "", title: str = "",
+                     artist: str = ""):
+    """取某个候选歌曲的歌词（手选歌词行时按需加载，走应用层缓存）。"""
+    cfg = db.get_config()
+    interval = float(cfg.get("min_interval", "0.3"))
+    src_name = (source or "").strip()
+    song_id = (song_id or "").strip()
+    if not song_id:
+        raise HTTPException(400, "缺少候选 ID")
+    if src_name and src_name != "qqmusic":
         try:
-            tags, has_cover, has_lyrics = _task_tags(path)
+            from musicmeta.sources.base import SongMeta
+            from musicmeta.sources.registry import get_source
+            src = get_source(src_name, min_interval=interval)
+            meta = SongMeta(title=title or "", artist=artist or "",
+                            song_id=song_id, source=src_name)
+            meta = scheduler.enrich_cached(src, meta)
+            if meta.extra.get("lyrics"):
+                return {"lyrics": meta.extra["lyrics"]}
+        except HTTPException:
+            raise
         except Exception:
-            continue
-        m = _counts_for_task_tags(tags, has_cover, has_lyrics)
-        for k in counts:
-            if m[k]:
-                counts[k] += 1
-    with _filter_counts_lock:
-        _filter_counts_cache["c"] = (time.time() + _FILTER_COUNTS_TTL, counts)
-    return counts
-
-
-@app.get("/api/tasks/export")
-def export_tasks():
-    """导出全部任务结果为 CSV（便于离线复核人工队列）。"""
-    import csv
-    import io
-    rows = db.list_tasks(limit=100000)
-    buf = io.StringIO()
-    w = csv.writer(buf)
-    w.writerow(["name", "path", "status", "score01", "title", "artist",
-                "album", "year", "error"])
-    for t in rows:
-        w.writerow([
-            t["name"], t["path"], t["status"],
-            round((t["score"] or 0) / 100, 3) if t["score"] is not None else "",
-            t["title"], t["artist"], t["album"], t["year"], t["error"]])
-    return Response(
-        buf.getvalue(),
-        media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": "attachment; filename=tasks.csv"})
+            pass
+        raise HTTPException(404, "该候选没有歌词")
+    src = _resolve_src("qqmusic", interval)
+    if src is None:
+        raise HTTPException(404, "未安装 qqmusic 插件，无法获取歌词")
+    lrc = scheduler.lyrics_cached(src, song_id)
+    if not lrc:
+        raise HTTPException(404, "该候选没有歌词")
+    return {"lyrics": lrc}
 
 
 @app.get("/api/stats")
@@ -519,59 +557,6 @@ def status():
 
 # ---------------- 人工辅助 ----------------
 
-class DecideBody(BaseModel):
-    file: str
-    songmid: str | None = None
-    skip: bool = False
-    fields: list[str] | None = None   # 勾选字段；未勾选的字段不写入
-
-
-@app.get("/api/pending")
-def pending(limit: int = 100, offset: int = 0):
-    """待人工决策队列（含候选列表）。
-
-    候选按当前勾选的元数据源过滤显示：取消勾选的源，其候选立即从队列中隐藏
-    （重新搜索/刮削后彻底清除）。
-    """
-    cfg = db.get_config()
-    allowed = {n.strip() for n in cfg.get("source", "").split(",") if n.strip()}
-    tasks = db.list_tasks("manual_pending", limit, offset)
-    total = db.count_tasks("manual_pending")
-    out = []
-    for t in tasks:
-        cands = db.get_candidates(t["path"])
-        if allowed:
-            cands = [c for c in cands if (c.get("source") or "") in allowed]
-        else:
-            cands = []
-        out.append({**t, "file_duration": scheduler._file_duration(t["path"]),
-                    "candidates": cands})
-    return {"total": total, "items": out}
-
-
-class MarkDoneBody(BaseModel):
-    file: str
-
-
-@app.post("/api/mark-done")
-def mark_done(body: MarkDoneBody):
-    """直接记忆到已人工：不选用任何候选、不写入任何字段，
-    只把这首歌标记为已人工处理（manual_done）并加入永久记忆（哈希），
-    之后刮削自动排除。适合「文件内嵌的元数据已经很好，无需选用候选」的情况。
-    """
-    path = body.file
-    if not path or not path.strip():
-        raise HTTPException(400, "缺少文件路径")
-    cfg = db.get_config()
-    db.decide(path, "", skip=False)     # 写入 decisions（songmid 为空串但非 skip）
-    db.update_task_status(path, "manual_done", written="")  # 不写任何字段
-    if cfg.get("write_enabled") == "1":
-        try:
-            db.record_manual_done(path)
-        except Exception:
-            pass
-    return {"ok": True, "status": "manual_done"}
-
 
 @app.post("/api/reprocess-pending")
 def reprocess_pending():
@@ -587,19 +572,6 @@ def reprocess_pending():
     n = db.requeue_status("manual_pending")
     ok = scheduler.start_scraper(paths) if paths else False
     return {"requeued": n, "started": ok}
-
-
-@app.post("/api/reprocess-errors")
-def reprocess_errors():
-    """重刮错误队列：把 error 状态恢复为待处理，并只启动刮削这几首歌。"""
-    with db.connect() as c:
-        rows = c.execute("SELECT path FROM tasks WHERE status='error'").fetchall()
-    paths = [r["path"] for r in rows]
-    if not paths:
-        return {"requeued": 0, "started": False}
-    n = db.requeue_status("error")
-    ok = scheduler.start_scraper(paths)
-    return {"requeued": n, "started": ok, "files": paths}
 
 
 @app.post("/api/scrape-pending")
@@ -654,66 +626,6 @@ def rename_file(body: RenameBody):
     return {"ok": True, "path": new}
 
 
-@app.post("/api/decide")
-def decide(body: DecideBody):
-    """人工选择某个候选写入；skip=True 表示跳过不处理。
-
-    fields 可选：勾选的字段列表（如 ["title","artist","cover"]）；
-    未勾选的字段不会写入。不传则按配置写入全部字段。
-    """
-    path = body.file
-    if body.skip:
-        # 跳过不需要文件存在：文件可能已被删除，也应能跳过
-        db.decide(path, "", skip=True)
-        return {"status": "skipped"}
-    if not os.path.isfile(path):
-        raise HTTPException(400, f"文件不存在: {path}")
-
-    cands = db.get_candidates(path)
-    chosen = next((c for c in cands if c["songmid"] == body.songmid), None)
-    if chosen is None:
-        raise HTTPException(400, "候选不存在（可能已过期，请重新搜索）")
-
-    cfg = db.get_config()
-    # 字段勾选：未勾选的字段对应写入开关置 0
-    if body.fields is not None:
-        sel = set(f.strip() for f in body.fields if f and f.strip())
-        for f, sw in FIELD_SWITCH.items():
-            cfg[sw] = "1" if f in sel else "0"
-    written: list = []
-    if cfg.get("write_enabled") == "1":
-        from musicmeta.sources.base import SongMeta
-        meta = SongMeta(
-            title=chosen["title"], artist=chosen["artist"],
-            album=chosen["album"], date=chosen["year"],
-            song_id=chosen["songmid"], album_id=chosen["albummid"],
-            source=chosen.get("source") or "qqmusic")
-        # 按候选来源 enrich（候选源插件可用则用它；否则尝试 qqmusic 插件兜底）
-        src = _resolve_src(meta.source, float(cfg.get("min_interval", "0.3")))
-        try:
-            if src is not None:
-                meta = scheduler.enrich_cached(src, meta)  # 补全全部字段
-        except Exception:
-            pass
-        try:
-            written = scheduler._write_fields(path, meta, src, cfg)
-        except OSError as exc:
-            raise HTTPException(500, scheduler._cn_err(exc))
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(500, f"写入失败：{exc}")
-    db.decide(path, body.songmid, skip=False)
-    db.update_task_status(path, "manual_done", written=",".join(written))
-    # 人工处理 + 真实写入模式开启 → 永久记忆（按文件哈希），后续刮削自动排除
-    if cfg.get("write_enabled") == "1" and written:
-        try:
-            db.record_manual_done(path)
-        except Exception:
-            pass
-    if written:
-        _invalidate_filter_cache(path)   # 选用写入字段：过滤缓存失效
-    return {"status": "manual_done", "songmid": body.songmid}
-
-
 class BatchDecideBody(BaseModel):
     mode: str = "best"   # best=每个文件选用最高分候选；skip=全部跳过
 
@@ -754,184 +666,12 @@ def decide_batch(body: BatchDecideBody):
     return {"mode": body.mode, "done": done, "chosen": chosen, "skipped": skipped}
 
 
-def _search_by_words(file: str, words: list, cfg: dict, force_live: bool = False,
-                     use_cache: bool = True) -> list:
-    """按一组 (title, artist) 关键词跨全部选中源搜索候选并排序（共享逻辑）。
-
-    words: [(title, artist), ...]；用于「用户手动输入歌名/歌手」的场景
-    （文件名自动刮削请用 scheduler.match_file，走候选词 + 命中即停）。
-    force_live: 跳过缓存强制在线。
-    use_cache=False 时仍走 search_cached（其内部缓存），此参数预留。
-    返回 SongMeta 列表：通过文件名反推校验的排最前，其余按排序分降序。
-    """
-    from musicmeta.filenames import clean_filename, verify_detail
-    from musicmeta.sources.registry import get_source
-    names = [n.strip() for n in cfg.get("source", "").split(",") if n.strip()]
-    plimit = max(1, int(cfg.get("source_limit", "10")))
-    fdur = scheduler._file_duration(file)
-    stem = clean_filename(os.path.basename(file)).stem
-    # 排序用的「关键词段」= 用户输入的歌名/歌手
-    segs = [t for t, _a in words if t] + [a for _t, a in words if a]
-    # 按 (源, song_id) 去重
-    best_map: dict = {}
-    for name in names:
-        try:
-            src = get_source(name, min_interval=float(cfg.get("min_interval", "0.3")))
-            for title, artist in words:
-                round_seen = set()
-                for meta in scheduler.search_cached(src, title, artist,
-                                                    limit=plimit,
-                                                    force_live=force_live):
-                    key = (name, meta.song_id)
-                    if meta.song_id and key not in round_seen:
-                        round_seen.add(key)
-                        # 手动搜索也用同一套反推校验，仅用于排序（不拦截结果）
-                        ok, why = verify_detail(stem, meta.title, meta.artist)
-                        meta.extra["verified"] = bool(ok)
-                        meta.extra["verify_reason"] = why
-                        meta.confidence = scheduler._rescore(meta, segs, fdur)
-                        prev = best_map.get(key)
-                        if prev is None or scheduler._rank_key(meta) > \
-                                scheduler._rank_key(prev):
-                            best_map[key] = meta
-        except Exception as exc:  # noqa: BLE001
-            print(f"[search] 源 {name} 手动搜索「{words}」异常: {exc}")
-            continue
-    metas = list(best_map.values())
-    metas.sort(key=scheduler._rank_key, reverse=True)
-    return metas
-
-
-@app.get("/api/refresh/{file:path}")
-def refresh_candidates(file: str):
-    """对单个文件重新搜索候选（使用全部选中源，合并显示）。
-
-    与自动刮削完全同一套规则（scheduler.match_file）：
-    清洗文件名 → 候选词逐个搜索（命中即停）→ 用搜索结果反推校验。
-    出现通过校验的候选即标记 auto_ok（write_enabled=1 时同时写入文件）；
-    未通过校验则留在人工队列，并把候选列表返回给人工挑选。
-    """
-    if not os.path.isfile(file):
-        raise HTTPException(400, f"文件不存在: {file}")
-    cfg = db.get_config()
-    res = scheduler.match_file(file, cfg, force_live=True)
-    metas = res.metas
-    db.add_candidates(file, [scheduler._meta_to_dict(m) for m in metas])
-
-    auto_written = False
-    write_error = ""
-    if res.verified:
-        best = res.verified[0]
-        written: list = []
-        if cfg.get("write_enabled") == "1":
-            # 与自动刮削同一套写入流程（含 enrich）
-            src = None
-            try:
-                src = _resolve_src(best.source, float(cfg.get("min_interval", "0.3")))
-            except Exception:
-                src = None
-            try:
-                if src is not None and hasattr(src, "enrich"):
-                    best = scheduler.enrich_cached(src, best)
-            except Exception:
-                pass
-            try:
-                written = scheduler._write_fields(file, best, src, cfg)
-            except OSError as exc:
-                # 权限等写入失败：不标 500，返回提示，任务留在人工队列
-                write_error = scheduler._cn_err(exc)
-            except Exception as exc:  # noqa: BLE001
-                write_error = f"写入失败：{exc}"
-        if not write_error:
-            db.update_task_status(
-                file, "auto_ok", score=best.confidence, title=best.title,
-                artist=best.artist, album=best.album, year=best.date,
-                written=",".join(written))
-            auto_written = True
-            if written:
-                _invalidate_filter_cache(file)
-    elif metas:
-        top = metas[0]
-        msg = ("文件名里只有歌名、没有歌手，无法完成「歌名+歌手都出现在文件名中」的"
-               "反推校验；请手动搜索确认，或改用指纹模式，待人工辅助"
-               if res.title_only else
-               "未通过文件名反推校验（结果歌名/歌手未同时出现在文件名中）；"
-               "可手动搜索，或用音频指纹（Chromaprint+AcoustID）识别，待人工辅助")
-        db.update_task_status(
-            file, "manual_pending", score=top.confidence, title=top.title,
-            artist=top.artist, album=top.album, year=top.date, error=msg)
-    return {"candidates": db.get_candidates(file), "auto_written": auto_written,
-            "write_error": write_error, "queries": res.queries,
-            "verified": len(res.verified)}
-
-
-class ManualSearchBody(BaseModel):
-    file: str
-    title: str = ""
-    artist: str = ""
-
-
-@app.post("/api/manual-search")
-def manual_search(body: ManualSearchBody):
-    """手动搜索：文件名格式不对/识别不出时，用户输入歌名(可选歌手)跨源搜索。
-
-    只更新候选列表并返回，不自动写入 —— 结果由用户在人工辅助队列里选用。
-    """
-    file = (body.file or "").strip()
-    title = (body.title or "").strip()
-    artist = (body.artist or "").strip()
-    if not os.path.isfile(file):
-        raise HTTPException(400, f"文件不存在: {file}")
-    if not title and not artist:
-        raise HTTPException(400, "请至少输入歌名")
-    cfg = db.get_config()
-    metas = _search_by_words(file, [(title, artist)], cfg, force_live=True)
-    db.add_candidates(file, [scheduler._meta_to_dict(m) for m in metas])
-    return {"candidates": db.get_candidates(file), "count": len(metas),
-            "title": title, "artist": artist}
-
-
-@app.get("/api/lyrics/{songmid}")
-def get_lyrics(songmid: str, source: str = "", title: str = "", artist: str = ""):
-    """获取某候选的歌词（LRC），供人工确认时查看。
-
-    候选来自非 QQ 源（lrclib/netease/kugou 等）时，按该源补全歌词；
-    QQ 源走原逻辑（songmid 直查）。
-    """
-    cfg = db.get_config()
-    interval = float(cfg.get("min_interval", "0.3"))
-    src_name = (source or "").strip()
-    if src_name and src_name != "qqmusic":
-        try:
-            from musicmeta.sources.base import SongMeta
-            from musicmeta.sources.registry import get_source
-            src = get_source(src_name, min_interval=interval)
-            meta = SongMeta(title=title or "", artist=artist or "",
-                            song_id=songmid, source=src_name)
-            meta = scheduler.enrich_cached(src, meta)
-            if meta.extra.get("lyrics"):
-                return {"lyrics": meta.extra["lyrics"]}
-        except HTTPException:
-            raise
-        except Exception:
-            pass
-        raise HTTPException(404, "该歌曲无歌词")
-    src = _resolve_src("qqmusic", interval)
-    if src is None:
-        raise HTTPException(404, "未安装 qqmusic 数据源插件，无法获取歌词（请安装 qqmusic.py 后重启）")
-    lrc = scheduler.lyrics_cached(src, songmid)
-    if not lrc:
-        raise HTTPException(404, "该歌曲无歌词")
-    return {"lyrics": lrc}
-
-
 @app.get("/api/stream/{file:path}")
 def stream_audio(file: str):
     """流式播放本地音频文件（供预览：本地音频 + 候选元数据配合试听）。
 
     仅允许播放已授权音乐目录内的文件；支持 Range（浏览器可拖动进度）。
     """
-    from fastapi.responses import FileResponse
     if not os.path.isfile(file):
         raise HTTPException(404, "文件不存在")
     root = os.path.abspath(db.get_config().get("music_dir", "") or "/")
@@ -943,61 +683,12 @@ def stream_audio(file: str):
     return FileResponse(file, media_type=mt, filename=os.path.basename(file))
 
 
-@app.get("/api/recognize/{file:path}")
-def recognize_candidates(file: str):
-    """音频指纹识别：用音频内容识别歌曲并回查 QQ，返回候选列表。"""
-    if not os.path.isfile(file):
-        raise HTTPException(400, f"文件不存在: {file}")
-    cfg = db.get_config()
-    key = cfg.get("acoustid_key", "").strip()
-    if not key:
-        raise HTTPException(400, "未配置 AcoustID API key（免费注册: acoustid.org/new-application）")
-    src = _resolve_src("qqmusic", float(cfg.get("min_interval", "0.3")))
-    if src is None:
-        raise HTTPException(400, "指纹识别需要 qqmusic 数据源插件（数据源目录提供 qqmusic.py，安装后重启）")
-    metas = src.recognize_by_fingerprint(file, key)
-    if not metas:
-        raise HTTPException(404, "指纹识别无结果（音频可能在 MusicBrainz 库中无记录）")
-    db.add_candidates(file, [scheduler._meta_to_dict(m) for m in metas])
-    return db.get_candidates(file)
-
-
 @app.get("/api/health")
 def health():
     return {"ok": True, "app": "music-meta-web"}
 
 
 # ---------------- 已人工处理永久记忆（哈希） ----------------
-
-@app.get("/api/manual-done")
-def manual_done(limit: int = 100, offset: int = 0, q: str = ""):
-    """已人工处理列表（持久化，分页+搜索）。每条附带当前文件标签（供简洁展示）。"""
-    from musicmeta import writer as _w
-    items = db.list_manual_done(limit, offset, q.strip())
-    for m in items:
-        m["exists"] = os.path.isfile(m["file_path"])
-        if m["exists"]:
-            try:
-                m["tags"] = _w.read_tags(m["file_path"])
-            except Exception:
-                m["tags"] = {}
-        else:
-            m["tags"] = {}
-    return {
-        "total": db.count_manual_done(q.strip()),
-        "items": items,
-    }
-
-
-class ManualDoneBody(BaseModel):
-    file: str
-
-
-@app.post("/api/manual-done/remove")
-def manual_done_remove(body: ManualDoneBody):
-    """把某首歌从已人工处理记忆中移除（之后刮削不再排除它）。"""
-    ok = db.remove_manual_done(body.file)
-    return {"removed": ok}
 
 
 # ---------------- 已确认歌曲缓存导出（auto_ok 固化，下次全量扫描零网络） ----------------
@@ -1161,93 +852,6 @@ FIELD_SWITCH = {
 }
 
 
-def _meta_full(m) -> dict:
-    """完整序列化 SongMeta（含封面 URL 与歌词，供单项编辑候选使用）。"""
-    return {
-        "song_id": m.song_id, "title": m.title, "artist": m.artist,
-        "album": m.album, "date": m.date, "album_id": m.album_id,
-        "duration": m.duration, "confidence": m.confidence, "source": m.source,
-        "genre": m.genre, "publisher": m.publisher, "language": m.language,
-        "album_artist": m.album_artist, "track": m.track,
-        "cover_url": m.extra.get("cover_url", ""),
-        "lyrics": m.extra.get("lyrics", ""),
-        # 文件名反推校验结果（1=歌名+歌手都出现在文件名中）
-        "verified": bool(m.extra.get("verified")),
-        "verify_reason": m.extra.get("verify_reason", ""),
-    }
-
-
-@app.get("/api/song-detail")
-def song_detail(file: str):
-    """单首歌详情：当前标签、当前封面(base64)、当前歌词、文件时长、任务信息、候选。"""
-    if not os.path.isfile(file):
-        raise HTTPException(400, f"文件不存在: {file}")
-    from musicmeta import writer as _w
-    tags = _w.read_tags(file)
-    pic = _w.read_picture(file)
-    lrc = _w.read_lyrics(file)
-    task = None
-    with db.connect() as c:
-        row = c.execute("SELECT * FROM tasks WHERE path=?", (file,)).fetchone()
-        if row:
-            task = dict(row)
-    return {
-        "file": file, "name": os.path.basename(file),
-        "tags": tags,
-        "duration": scheduler._file_duration(file),   # 文件时长（秒），供候选对比
-        "cover_base64": (b"data:image/jpeg;base64," + __import__("base64").b64encode(pic)).decode()
-        if pic else "",
-        "lyrics": lrc,
-        "task": task,
-        "candidates": db.get_candidates(file),
-    }
-
-
-@app.get("/api/field-candidates")
-def field_candidates(file: str):
-    """按配置勾选的源，为这首歌搜索候选（每源前 10 条，供单项刮削选择）。"""
-    if not os.path.isfile(file):
-        raise HTTPException(400, f"文件不存在: {file}")
-    cfg = db.get_config()
-    names = [n.strip() for n in cfg.get("source", "").split(",") if n.strip()]
-    plimit = max(1, int(cfg.get("source_limit", "10")))
-    from musicmeta.filenames import (build_candidates, clean_filename,
-                                     verify_detail)
-    from musicmeta.sources.registry import get_source
-    cleaned = clean_filename(os.path.basename(file))
-    cands = build_candidates(cleaned)
-    result: dict = {}
-    for name in names:
-        try:
-            src = get_source(name, min_interval=float(cfg.get("min_interval", "0.3")))
-        except Exception:
-            continue
-        metas = []
-        try:
-            # 与自动刮削同一套候选词顺序，本源找到「通过反推校验」的候选即停
-            for cand in cands:
-                hit = False
-                for m in scheduler.search_cached(src, cand.text, "", limit=plimit):
-                    ok, why = verify_detail(cleaned.stem, m.title, m.artist)
-                    m.extra["verified"] = bool(ok)
-                    m.extra["verify_reason"] = why
-                    try:
-                        if hasattr(src, "enrich"):
-                            m = scheduler.enrich_cached(src, m)   # 补封面/歌词
-                    except Exception:
-                        pass
-                    m.extra["verified"] = bool(ok)   # enrich 后再标一次，供前端展示
-                    metas.append(_meta_full(m))
-                    hit = hit or ok
-                if hit:
-                    break
-        except Exception:
-            continue
-        if metas:
-            result[name] = metas
-    return {"sources": result, "queries": [c.text for c in cands]}
-
-
 class FieldWriteBody(BaseModel):
     file: str
     field: str
@@ -1270,6 +874,10 @@ def field_write(body: FieldWriteBody):
     field = body.field.strip()
     value = body.value.strip()
     cfg = db.get_config()
+    # 只允许写入「生效字段」：未勾选的字段在应用里不存在，接口层一并拦住
+    if field in FIELD_MAP and field not in active_fields(cfg):
+        raise HTTPException(400, f"字段「{FIELD_MAP[field].label}」未生效，"
+                                 f"请到设置里勾选后再写入")
 
     if field == "cover":
         if value:
@@ -1307,30 +915,3 @@ def field_write(body: FieldWriteBody):
         except Exception:
             pass
     return {"ok": True, "field": field}
-
-
-@app.post("/api/cover-upload")
-async def cover_upload(file: str = Form(...), image: UploadFile = File(...)):
-    """上传封面图片写入歌曲标签（支持 png/jpg/jpeg/webp，≤5MB）。"""
-    if not os.path.isfile(file):
-        raise HTTPException(400, f"文件不存在: {file}")
-    data = await image.read()
-    if len(data) > 5 * 1024 * 1024:
-        raise HTTPException(400, "图片超过 5MB 限制")
-    if data[:3] == b"\xff\xd8\xff" or data[:4] == b"\x89PNG" or \
-            data[:4] == b"RIFF" or data[:8] == b"\x89WEBP" or \
-            (len(data) > 12 and data[8:12] == b"WEBP"):
-        from musicmeta import writer as _w
-        try:
-            _w.write_cover(file, data)
-        except OSError as exc:
-            raise HTTPException(500, scheduler._cn_err(exc))
-        scheduler._restore_owner(file)
-        _invalidate_filter_cache(file)   # 封面变更：过滤器（如"无封面"）立即更新
-        if db.get_config().get("write_enabled") == "1":
-            try:
-                db.record_manual_done(file)
-            except Exception:
-                pass
-        return {"ok": True, "bytes": len(data)}
-    raise HTTPException(400, "仅支持 PNG/JPEG/WebP 图片")

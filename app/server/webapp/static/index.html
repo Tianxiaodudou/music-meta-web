@@ -5,20 +5,30 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>音乐数据刮削</title>
 <style>
-  :root { --accent:#1d9bf0; --ok:#1aab5e; --warn:#e0a800; --err:#d9534f; --bg:#f5f6f8; }
+  :root {
+    --accent:#1d9bf0; --ok:#1aab5e; --warn:#e0a800; --err:#d9534f; --bg:#f5f6f8;
+    /* 6 种状态标签配色（与状态过滤器一致） */
+    --st-auto-bg:#d4edda;    --st-auto-fg:#155724;   /* 自动写入 浅绿 */
+    --st-pending-bg:#e7e9ee; --st-pending-fg:#555;   /* 待刮削前 浅灰 */
+    --st-done-bg:#1aab5e;    --st-done-fg:#fff;      /* 已人工   绿   */
+    --st-manual-bg:#ffe08a;  --st-manual-fg:#7a5b00; /* 待人工关 黄   */
+    --st-skip-bg:#fff8dc;    --st-skip-fg:#8a6d1d;   /* 跳过     浅黄 */
+    --st-error-bg:#d9534f;   --st-error-fg:#fff;     /* 错误     红   */
+  }
   * { box-sizing: border-box; }
-  body { font-family: "PingFang SC","Microsoft YaHei",sans-serif; margin:0; background:var(--bg); color:#222; }
-  /* 顶栏：任何页面都置顶显示 */
+  body { font-family:"PingFang SC","Microsoft YaHei",sans-serif; margin:0; background:var(--bg); color:#222; }
   .topbar { position:sticky; top:0; z-index:90; background:#fff; border-bottom:1px solid #e3e6ea; padding:10px 20px; box-shadow:0 2px 6px rgba(0,0,0,.04); }
   .topbar h1 { font-size:16px; margin:0 16px 0 0; white-space:nowrap; }
   .topbar .row1 { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:8px; }
   .topbar .stats { display:flex; flex-wrap:wrap; gap:14px; font-size:13px; align-items:center; }
   .topbar .stats b { font-size:17px; }
-  .topbar nav { display:flex; flex-wrap:wrap; gap:6px; }
-  .topbar nav button { padding:5px 14px; font-size:13px; border:1px solid #d5d9de; background:#fff; color:#333; border-radius:14px; cursor:pointer; }
-  .topbar nav button.active { background:var(--accent); color:#fff; border-color:var(--accent); }
-  .topbar .actions { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+  .topbar .actions { display:flex; flex-wrap:wrap; gap:6px; }
   .running { font-size:12px; color:#999; }
+  /* 右上角齿轮：全局设置入口 */
+  .gear { margin-left:auto; background:#fff; color:#555; border:1px solid #d5d9de;
+          font-size:20px; line-height:1; padding:5px 11px; border-radius:50%; }
+  .gear:hover { color:var(--accent); border-color:var(--accent); }
+  .gear.on { color:var(--accent); border-color:var(--accent); background:#eaf4ff; }
   main { max-width:1180px; margin:16px auto; padding:0 16px; }
   .page { display:none; }
   .page.active { display:block; }
@@ -27,55 +37,110 @@
   .row { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:8px; }
   label { font-size:13px; color:#555; }
   input[type=number], input[type=text], input[type=password], select, textarea { padding:6px 8px; border:1px solid #ccc; border-radius:4px; font-size:13px; }
-  input[type=range] { width:220px; }
   button { padding:6px 14px; border:0; border-radius:4px; background:var(--accent); color:#fff; cursor:pointer; font-size:13px; }
   button.secondary { background:#6c757d; }
   button.ok { background:var(--ok); }
   button.warn { background:var(--warn); }
   button.danger { background:var(--err); }
-  button:disabled { opacity:.5; cursor:not-allowed; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
   .progress { background:#e9ecef; border-radius:4px; height:10px; margin:8px 0; overflow:hidden; }
   .progress > div { background:var(--accent); height:100%; }
-  table { width:100%; border-collapse:collapse; font-size:13px; }
-  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid #eee; vertical-align:top; }
-  th { color:#666; font-weight:600; }
-  .tag { display:inline-block; padding:2px 8px; border-radius:10px; font-size:12px; }
-  .tag.auto_ok { background:#d4edda; color:#155724; }
-  .tag.manual_pending { background:#fff3cd; color:#856404; }
-  .tag.manual_done { background:#cce5ff; color:#004085; }
-  .tag.skipped { background:#e2e3e5; color:#383d41; }
-  .tag.error { background:#f8d7da; color:#721c24; }
-  .tag.processing { background:#d1ecf1; color:#0c5460; }
-  .tag.pending { background:#e7e9ee; color:#555; }
-  .cand { border:1px solid #e3e6ea; border-radius:8px; padding:10px; margin:8px 0; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
-  .cand img { width:56px; height:56px; border-radius:4px; object-fit:cover; background:#eee; }
-  .cand .info { flex:1; font-size:13px; min-width:200px; }
-  .cand .score { color:var(--accent); font-weight:700; }
-  .noimg { width:56px; height:56px; border-radius:4px; background:#eee; display:flex; align-items:center; justify-content:center; color:#999; font-size:24px; flex-shrink:0; }
   .muted { color:#888; font-size:12px; }
-  .pager { display:flex; gap:8px; align-items:center; margin:10px 0; font-size:13px; }
-  .searchbar { display:flex; gap:8px; margin:8px 0; }
+  .pager { display:flex; gap:8px; align-items:center; margin:10px 0; font-size:13px; flex-wrap:wrap; }
+  .searchbar { display:flex; gap:8px; margin:10px 0; flex-wrap:wrap; }
   .searchbar input { flex:1; max-width:340px; }
-  /* 编辑弹窗 */
-  .modal { position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:100; display:none; align-items:flex-start; justify-content:center; overflow:auto; padding:30px 10px; }
+  .empty { color:#999; font-size:13px; padding:10px 0; }
+
+  /* ---------------- 状态过滤器（队列页顶部） ---------------- */
+  .chipbar { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:6px; }
+  .chip { display:inline-flex; align-items:center; gap:7px; padding:5px 13px; border-radius:15px;
+          font-size:13px; font-weight:600; border:2px solid transparent; cursor:pointer; }
+  .chip .n { font-weight:800; font-size:14px; }
+  .chip.active { border-color:#333; box-shadow:0 0 0 2px rgba(0,0,0,.06); }
+  .chip.all       { background:#222;      color:#fff; }
+  .chip.auto_ok   { background:var(--st-auto-bg);    color:var(--st-auto-fg); }
+  .chip.pending   { background:var(--st-pending-bg); color:var(--st-pending-fg); }
+  .chip.manual_done    { background:var(--st-done-bg);   color:var(--st-done-fg); }
+  .chip.manual_pending { background:var(--st-manual-bg); color:var(--st-manual-fg); }
+  .chip.skipped   { background:var(--st-skip-bg);    color:var(--st-skip-fg); border-color:#eadfae; }
+  .chip.error     { background:var(--st-error-bg);   color:var(--st-error-fg); }
+
+  /* ---------------- 队列卡片 ---------------- */
+  .qcard { border:1px solid #e3e6ea; border-radius:8px; padding:10px 12px; margin:8px 0;
+           display:flex; gap:12px; align-items:center; flex-wrap:wrap; background:#fff; }
+  .qcard .qmain { flex:1; min-width:220px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .qcard .qname { font-size:14px; font-weight:600; word-break:break-all; }
+  .qcard .qops { display:flex; gap:6px; flex-wrap:wrap; }
+  .qcard .qnote { width:100%; font-size:12px; color:#721c24; background:#fdf0ef;
+                  border:1px solid #f5c6cb; border-radius:4px; padding:5px 9px; white-space:pre-wrap; }
+  /* 状态标签（可点击 → 状态菜单） */
+  .sttag { display:inline-flex; align-items:center; gap:5px; padding:3px 11px; border-radius:12px;
+           font-size:12px; font-weight:700; cursor:pointer; white-space:nowrap; border:1px solid transparent; }
+  .sttag::after { content:"▾"; font-size:10px; opacity:.75; }
+  .sttag.auto_ok        { background:var(--st-auto-bg);    color:var(--st-auto-fg); }
+  .sttag.pending        { background:var(--st-pending-bg); color:var(--st-pending-fg); }
+  .sttag.manual_done    { background:var(--st-done-bg);    color:var(--st-done-fg); }
+  .sttag.manual_pending { background:var(--st-manual-bg);  color:var(--st-manual-fg); }
+  .sttag.skipped        { background:var(--st-skip-bg);    color:var(--st-skip-fg); }
+  .sttag.error          { background:var(--st-error-bg);   color:var(--st-error-fg); }
+  .sttag.processing     { background:#d1ecf1; color:#0c5460; }
+
+  /* ---------------- 浮动菜单 / 浮层 ---------------- */
+  .pop { position:fixed; z-index:220; background:#fff; border:1px solid #d5d9de; border-radius:8px;
+         box-shadow:0 6px 20px rgba(0,0,0,.16); padding:8px; display:none; }
+  .pop.open { display:block; }
+  /* 状态菜单：6 行，右侧「指定」按钮竖向对齐（固定列宽 + 右对齐） */
+  .status-menu { min-width:190px; }
+  .status-menu .srow { display:grid; grid-template-columns:1fr 62px; align-items:center; gap:10px;
+                       padding:3px 2px; }
+  .status-menu .sname { font-size:12.5px; font-weight:700; padding:2px 9px; border-radius:11px; text-align:center; }
+  .status-menu .sgo { width:62px; text-align:center; padding:3px 0; font-size:12px; border-radius:4px; }
+  .rename-pop { width:min(430px,92vw); }
+  .rename-pop .rrow { display:flex; gap:8px; align-items:center; }
+  .rename-pop input { flex:1; min-width:0; }
+  /* 候选值下拉 */
+  .cand-menu { max-height:46vh; overflow:auto; max-width:min(720px,94vw); }
+  .cand-menu .cm-item { display:flex; flex-direction:column; gap:2px; padding:6px 9px; border-radius:5px; cursor:pointer; }
+  .cand-menu .cm-item:hover { background:#eef6ff; }
+  .cand-menu .cm-val { font-size:13px; word-break:break-all; }
+  .cand-menu .cm-src { font-size:11.5px; color:#888; }
+  .cand-menu .cm-empty { padding:8px 10px; font-size:12.5px; color:#888; }
+
+  /* ---------------- 手动刮削窗口 ---------------- */
+  #scrubModal { align-items:center; }              /* 窗口垂直居中 */
+  .scrub-box { width:min(1120px,97vw); max-height:92vh; overflow:auto; }
+  .scrub-head { display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; }
+  .scrub-head h3 { margin:0; font-size:15px; word-break:break-all; }
+  .player { border:1px solid #e3e6ea; border-radius:8px; padding:8px 10px; margin:8px 0; }
+  .player audio { width:100%; }
+  .player .lrc-box { margin-top:6px; height:170px; overflow:auto; background:#f8f9fa; border-radius:6px;
+                     padding:6px 10px; font-size:12.5px; line-height:1.75; }
+  .lrc-line { padding:1px 5px; border-radius:3px; cursor:pointer; }
+  .lrc-line:hover { background:#eef6ff; }
+  .lrc-line.active { color:var(--accent); font-weight:700; background:#e7f3ff; }
+  .scrub-row { display:flex; gap:10px; align-items:flex-start; padding:7px 0; border-bottom:1px solid #f0f2f4; flex-wrap:wrap; }
+  .scrub-row .sr-name { width:76px; flex-shrink:0; font-size:13px; font-weight:700; color:#444; padding-top:5px; }
+  .scrub-row .sr-cell { flex:1; min-width:180px; display:flex; gap:6px; align-items:flex-start; }
+  .scrub-row .sr-tag { font-size:11px; color:#999; flex-shrink:0; padding-top:7px; width:30px; }
+  .scrub-row .sr-cur { font-size:13px; color:#222; word-break:break-all; padding-top:5px; min-height:26px; }
+  .scrub-row .sr-cur.empty { color:#bbb; }
+  .scrub-row input.sr-in { width:100%; }
+  .scrub-row .sr-btns { display:flex; gap:6px; flex-shrink:0; flex-wrap:wrap; }
+  .lrc-cmp { display:flex; gap:12px; margin-top:10px; flex-wrap:wrap; }
+  .lrc-col { flex:1; min-width:280px; display:flex; flex-direction:column; gap:5px; }
+  .lrc-col .lrc-title { font-size:13px; font-weight:700; color:#444; display:flex; gap:8px;
+                        align-items:center; flex-wrap:wrap; }
+  .lrc-col textarea { width:100%; height:230px; font-size:12px; line-height:1.6; resize:vertical; }
+
+  /* ---------------- 通用弹窗 ---------------- */
+  .modal { position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:200; display:none;
+           align-items:flex-start; justify-content:center; overflow:auto; padding:26px 10px; }
   .modal.open { display:flex; }
   .modal-box { background:#fff; border-radius:10px; padding:16px 20px; width:min(900px,96vw); }
   .modal-box h3 { margin:0 0 10px; font-size:15px; }
-  .field-row { display:flex; gap:8px; align-items:center; padding:7px 0; border-bottom:1px solid #f0f2f4; flex-wrap:wrap; }
-  .field-row .fname { width:84px; font-size:13px; color:#444; font-weight:600; flex-shrink:0; }
-  .field-row .fval { flex:1; min-width:140px; font-size:13px; color:#222; }
-  .field-row input { width:180px; }
-  .field-row textarea { width:100%; min-height:80px; font-size:12px; }
-  .candlist { margin:6px 0 0; max-height:320px; overflow:auto; border:1px solid #e3e6ea; border-radius:6px; padding:8px; background:#fafbfc; }
-  .candlist .src-title { font-size:12px; color:var(--accent); font-weight:700; margin:8px 0 4px; }
-  .canditem { display:flex; gap:8px; align-items:center; padding:5px; border-radius:4px; font-size:12px; flex-wrap:wrap; }
-  .canditem:hover { background:#eef6ff; }
-  .canditem img { width:40px; height:40px; border-radius:3px; object-fit:cover; background:#eee; }
-  .lrc-line { padding:2px 4px; border-radius:3px; }
-  .lrc-line.active { color:var(--accent); font-weight:700; background:#e7f3ff; }
-  #msg { position:fixed; right:16px; top:64px; background:#333; color:#fff; padding:10px 16px; border-radius:6px; display:none; z-index:200; }
-  .err-detail { background:#fdf0ef; border:1px solid #f5c6cb; border-radius:4px; padding:6px 10px; font-size:12px; color:#721c24; white-space:pre-wrap; }
-  .empty { color:#999; font-size:13px; padding:10px 0; }
+  #msg { position:fixed; right:16px; top:64px; background:#333; color:#fff; padding:10px 16px;
+         border-radius:6px; display:none; z-index:300; }
+
   /* ================= 手机/窄屏适配（<=760px） ================= */
   @media (max-width: 760px) {
     body { font-size:14px; }
@@ -83,9 +148,6 @@
     .topbar h1 { font-size:15px; margin-right:8px; }
     .topbar .stats { gap:10px; font-size:12px; }
     .topbar .stats b { font-size:15px; }
-    .topbar nav { gap:5px; }
-    .topbar nav button { padding:4px 11px; font-size:12px; }
-    .topbar .actions { gap:5px; }
     .topbar .actions button { font-size:12px; padding:5px 10px; }
     main { padding:0 10px; margin:10px auto; }
     .card { padding:10px 12px; }
@@ -94,19 +156,16 @@
     .row { gap:6px; }
     input[type=number], input[type=text], input[type=password], select, textarea { font-size:16px; padding:7px 8px; }
     button { padding:7px 12px; font-size:13px; }
-    /* 表格 → 卡片式：每行一张卡，字段带标签 */
-    table { display:block; }
-    thead { display:none; }
-    tbody { display:block; }
-    tr { display:block; border:1px solid #e3e6ea; border-radius:8px; padding:8px 10px; margin-bottom:10px; background:#fff; }
-    td { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; border:none; padding:4px 0; font-size:13px; }
-    td::before { content:attr(data-label); color:#888; font-size:12px; min-width:64px; flex-shrink:0; }
-    td .err-detail { width:100%; }
-    .pager { flex-wrap:wrap; gap:6px; font-size:12px; }
-    .searchbar { flex-wrap:wrap; }
+    .chipbar { gap:6px; }
+    .chip { padding:4px 10px; font-size:12px; }
+    .qcard { gap:8px; padding:9px 10px; }
+    .qcard .qmain { min-width:100%; }
+    .qcard .qops { width:100%; }
+    .qcard .qops button { flex:1; }
+    .pager { font-size:12px; }
     .searchbar input { min-width:100%; }
-    /* 弹窗：手机全屏化——整屏显示，头部吸顶，内容区滚动（信息不减少） */
     .modal { padding:0; align-items:stretch; }
+    #scrubModal { align-items:stretch; }           /* 手机：整屏显示 */
     .modal-box {
       width:100% !important; max-width:100% !important;
       height:100vh; height:100dvh;
@@ -114,24 +173,15 @@
       overflow-y:auto; -webkit-overflow-scrolling:touch;
       padding:10px 12px calc(16px + env(safe-area-inset-bottom));
     }
-    /* 头部（标题+关闭按钮）吸顶，滚动时始终可见 */
     .modal-box > div:first-child {
-      position:sticky; top:0; z-index:5;
-      background:#fff;
-      padding:8px 0; margin-bottom:8px;
-      border-bottom:1px solid #e3e6ea;
+      position:sticky; top:0; z-index:5; background:#fff;
+      padding:8px 0; margin-bottom:8px; border-bottom:1px solid #e3e6ea;
     }
-    /* 候选卡片 */
-    .cand { gap:8px; padding:8px; }
-    .cand img { width:48px; height:48px; }
-    .noimg { width:48px; height:48px; }
-    .cand .info { min-width:150px; }
-    /* 字段行（编辑/查看弹窗） */
-    .field-row { gap:6px; }
-    .field-row .fname { width:auto; min-width:70px; }
-    .field-row input { width:100%; }
-    .field-row .fval { min-width:0; }
-    .canditem { font-size:12px; }
+    .scrub-row .sr-name { width:60px; }
+    .scrub-row .sr-cell { min-width:100%; }
+    .lrc-col { min-width:100%; }
+    .lrc-col textarea { height:170px; }
+    .status-menu { min-width:210px; }
     #msg { left:10px; right:10px; top:auto; bottom:16px; text-align:center; font-size:13px; }
   }
 </style>
@@ -139,22 +189,14 @@
 <body>
 <div id="msg"></div>
 
-<!-- ======= 顶栏（所有页面置顶） ======= -->
+<!-- ======= 顶栏（全局置顶：统计 + 右上角设置齿轮） ======= -->
 <div class="topbar">
   <div class="row1">
     <h1>🎵 音乐数据刮削</h1>
     <span class="running" id="runState"></span>
     <div class="stats" id="stats"></div>
+    <button class="gear" id="gearBtn" onclick="showPage('config')" title="设置">⚙</button>
   </div>
-  <nav id="topnav">
-    <button id="nav-total"    class="active" onclick="showPage('total')">总数</button>
-    <button id="nav-autowrite" onclick="showPage('autowrite')">自动写入</button>
-    <button id="nav-pending"  onclick="showPage('pending')">待人工</button>
-    <button id="nav-manualdone" onclick="showPage('manualdone')">已人工</button>
-    <button id="nav-skip"     onclick="showPage('skip')">跳过</button>
-    <button id="nav-error"    onclick="showPage('error')">错误</button>
-    <button id="nav-config"   onclick="showPage('config')">配置</button>
-  </nav>
   <div class="actions">
     <button onclick="scan()">① 扫描目录</button>
     <button onclick="run()">② 开始刮削</button>
@@ -164,135 +206,50 @@
 </div>
 
 <main>
-  <!-- ======= 总数页面 ======= -->
-  <div class="page active" id="page-total">
+  <!-- ======= 队列页（全部状态合并成一个队列） ======= -->
+  <div class="page active" id="page-queue">
     <div class="card">
-      <h2>总数统计（当前扫描到的全部歌曲）
-        <button class="ok" style="float:right" onclick="scrapePending()">▶ 刮削待处理文件</button>
-      </h2>
+      <div class="chipbar" id="chipbar"></div>
       <div class="searchbar">
-        <input type="text" id="total_q" placeholder="搜索歌曲名 / 文件名…" onkeydown="if(event.key==='Enter')loadTotal()">
-        <button class="secondary" onclick="loadTotal()">搜索</button>
-        <button class="secondary" onclick="$('total_q').value='';loadTotal()">清空</button>
-        <span class="muted" id="total_info"></span>
+        <input type="text" id="q" placeholder="搜索文件名 / 歌名 / 歌手…"
+               onkeydown="if(event.key==='Enter')queueSearch()">
+        <button class="secondary" onclick="queueSearch()">搜索</button>
+        <button class="secondary" onclick="clearQueueSearch()">清空</button>
+        <span class="muted" id="queue_info"></span>
       </div>
-      <div class="row" style="margin-top:4px">
-        <label><b>元数据过滤：</b></label>
-        <label><input type="checkbox" id="f_no_lyrics" onchange="loadTotal()"> 无歌词 <span class="fcnt muted" id="fc_no_lyrics">…</span></label>
-        <label><input type="checkbox" id="f_no_cover" onchange="loadTotal()"> 无封面 <span class="fcnt muted" id="fc_no_cover">…</span></label>
-        <label><input type="checkbox" id="f_no_title" onchange="loadTotal()"> 无标题 <span class="fcnt muted" id="fc_no_title">…</span></label>
-        <label><input type="checkbox" id="f_no_artist" onchange="loadTotal()"> 无歌手 <span class="fcnt muted" id="fc_no_artist">…</span></label>
-        <label><input type="checkbox" id="f_no_album" onchange="loadTotal()"> 无专辑 <span class="fcnt muted" id="fc_no_album">…</span></label>
-        <label><input type="checkbox" id="f_no_year" onchange="loadTotal()"> 无年份 <span class="fcnt muted" id="fc_no_year">…</span></label>
-        <label><input type="checkbox" id="f_no_genre" onchange="loadTotal()"> 无流派 <span class="fcnt muted" id="fc_no_genre">…</span></label>
-        <label><input type="checkbox" id="f_no_track" onchange="loadTotal()"> 无曲目 <span class="fcnt muted" id="fc_no_track">…</span></label>
-        <button class="secondary" onclick="clearFilter()">清除过滤</button>
-      </div>
+      <div class="row" id="advfilter"></div>
+      <div class="row" id="batchbar"></div>
+      <div class="progress"><div id="prog" style="width:0%"></div></div>
       <div id="emptyGuide" style="display:none;background:#fff8e1;border:1px solid #ffe082;border-radius:6px;padding:10px 14px;margin:10px 0;font-size:13px;line-height:1.9">
         <b>还没有任何任务，按下面三步开始：</b><br>
         ① 先在「应用中心 → 音乐数据刮削 → 设置 → 授权目录」把音乐目录（如 /vol2/1000/音频库）授权给本应用<br>
-        ② 到「配置」页确认音乐目录与数据源 → 保存配置<br>
+        ② 点右上角 ⚙ 设置，确认音乐目录、数据源与生效字段 → 保存<br>
         ③ 点顶栏「① 扫描目录」→「② 开始刮削」
       </div>
-      <div class="progress"><div id="prog" style="width:0%"></div></div>
-      <table id="totalTable">
-        <thead><tr><th style="width:34%">文件</th><th>状态</th><th>匹配结果</th><th>得分</th><th>已写入</th><th>操作</th></tr></thead>
-        <tbody></tbody>
-      </table>
-      <div class="pager" id="total_pager"></div>
+      <div id="queue"></div>
+      <div class="pager" id="queue_pager"></div>
     </div>
   </div>
 
-  <!-- ======= 自动写入页面 ======= -->
-  <div class="page" id="page-autowrite">
-    <div class="card">
-      <h2>自动写入队列（当前正在写入的歌曲始终在第一位）
-        <button class="ok" style="float:right" onclick="exportAutoOk()">💾 导出已写入歌曲到缓存</button>
-      </h2>
-      <p class="muted">导出后：下次全量扫描时，这些歌直接从本地缓存自动写入，不再请求服务器（更快、不风控）。</p>
-      <div id="export_status" class="muted" style="margin:6px 0"></div>
-      <div id="autowrite"></div>
-      <div class="pager" id="autowrite_pager"></div>
-    </div>
-  </div>
-
-  <!-- ======= 待人工页面 ======= -->
-  <div class="page" id="page-pending">
-    <div class="card">
-      <h2>人工辅助队列（匹配值 &lt; 阈值）
-        <button class="ok" style="float:right" onclick="reprocessPending()">🔄 重新刮削本队列</button>
-        <button class="secondary" style="float:right;margin-right:8px" onclick="loadPending()">刷新</button>
-        <button class="secondary" style="float:right;margin-right:8px" onclick="batchBest()">批量选用最高分</button>
-        <button class="warn" style="float:right;margin-right:8px" onclick="batchSkip()">批量跳过</button>
-      </h2>
-      <p class="muted">从每个文件的多条候选结果中选最匹配的一首。点「查看」可看该候选的全部字段（含封面与歌词），勾选/取消勾选决定选用时写入哪些字段；点「预览」可播放本地音频核对。</p>
-      <div id="pending"></div>
-      <div class="pager" id="pending_pager"></div>
-    </div>
-  </div>
-
-  <!-- ======= 已人工页面 ======= -->
-  <div class="page" id="page-manualdone">
-    <div class="card">
-      <h2>已人工处理（永久记忆，刮削时自动排除）</h2>
-      <p class="muted">开启「真实写入模式」后人工处理过的歌曲会按文件哈希永久记住；之后开始刮削会跳过这些文件（即使总数统计里有它）。点「移除」可取消记忆。</p>
-      <div class="searchbar">
-        <input type="text" id="md_q" placeholder="搜索已人工处理的歌曲…" onkeydown="if(event.key==='Enter')loadManualDone()">
-        <button class="secondary" onclick="loadManualDone()">搜索</button>
-        <button class="secondary" onclick="$('md_q').value='';loadManualDone()">清空</button>
-        <span class="muted" id="md_info"></span>
-      </div>
-      <table id="mdTable">
-        <thead><tr><th style="width:50%">文件</th><th>内容哈希</th><th>处理时间</th><th>操作</th></tr></thead>
-        <tbody></tbody>
-      </table>
-      <div class="pager" id="md_pager"></div>
-    </div>
-  </div>
-
-  <!-- ======= 跳过页面 ======= -->
-  <div class="page" id="page-skip">
-    <div class="card">
-      <h2>跳过队列</h2>
-      <p class="muted">被跳过的歌曲：每一项都可以单独刮削或手动编辑（与总数页同一套编辑功能），编辑后可重新参与处理。</p>
-      <div class="searchbar">
-        <input type="text" id="skip_q" placeholder="搜索…" onkeydown="if(event.key==='Enter')loadSkip()">
-        <button class="secondary" onclick="loadSkip()">搜索</button>
-        <button class="secondary" onclick="$('skip_q').value='';loadSkip()">清空</button>
-        <button class="secondary" onclick="unskipAll()">全部恢复为待人工</button>
-        <span class="muted" id="skip_info"></span>
-      </div>
-      <table id="skipTable">
-        <thead><tr><th style="width:34%">文件</th><th>匹配结果</th><th>备注</th><th>操作</th></tr></thead>
-        <tbody></tbody>
-      </table>
-      <div class="pager" id="skip_pager"></div>
-    </div>
-  </div>
-
-  <!-- ======= 错误页面 ======= -->
-  <div class="page" id="page-error">
-    <div class="card">
-      <h2>错误详情
-        <button class="ok" style="float:right" onclick="reprocessErrors()">🔄 重刮本队列（只刮这几首）</button>
-      </h2>
-      <p class="muted">以下歌曲在处理时出错，显示详细错误信息（中文）。点「重刮本队列」只针对这几首重新刮削，不会带上其它歌曲。</p>
-      <table id="errorTable">
-        <thead><tr><th style="width:30%">文件</th><th>错误信息</th><th>操作</th></tr></thead>
-        <tbody></tbody>
-      </table>
-      <div class="pager" id="error_pager"></div>
-    </div>
-  </div>
-
-  <!-- ======= 配置页面 ======= -->
+  <!-- ======= 设置页（右上角齿轮进入） ======= -->
   <div class="page" id="page-config">
     <div class="card">
-      <h2>配置</h2>
+      <h2>设置
+        <button class="secondary" style="float:right" onclick="showPage('queue')">← 返回队列</button>
+      </h2>
+
       <div class="row">
-        <label>匹配阈值 <b id="thVal">0.9</b>（已废弃：是否自动写入改由「文件名反推校验」判定，打分只用于候选排序）</label>
-        <input type="range" id="threshold" min="0.5" max="1" step="0.01" value="0.9" disabled>
+        <label><b>生效字段</b>（勾选的字段才会显示，也才会写入文件）</label>
+        <div class="dropdown" id="afDrop">
+          <button class="secondary" id="afBtn" onclick="toggleFieldDrop(event)">选择字段 ▾</button>
+          <div class="pop" id="afPanel" onclick="event.stopPropagation()">
+            <div id="afChecks" style="display:flex;flex-direction:column;gap:6px;min-width:200px"></div>
+            <div class="muted" style="margin-top:8px">默认：歌名、歌手、封面图、歌词</div>
+          </div>
+        </div>
+        <span class="muted" id="afSummary"></span>
       </div>
+
       <div class="row">
         <label>音乐目录</label>
         <input type="text" id="music_dir" style="width:380px">
@@ -303,9 +260,9 @@
         <input type="number" id="min_interval" value="0.3" min="0.1" step="0.05" style="width:90px">
         <label>并发数</label>
         <input type="number" id="concurrency" value="1" min="1" max="8" style="width:70px">
-        <label>每源显示候选数</label>
+        <label>每源候选数</label>
         <input type="number" id="source_limit" value="10" min="1" max="20" style="width:70px">
-        <label class="muted">（候选列表里每个源显示几条结果，默认 10）</label>
+        <label class="muted">（手动刮削每个源取几条候选，默认 10）</label>
       </div>
       <div class="row">
         <label><input type="checkbox" id="idle_exit_enable" onchange="toggleIdleExit()"> <b>空闲自动退出</b></label>
@@ -317,7 +274,7 @@
         <label class="muted" style="color:var(--warn)">⚠ 开启后：长时间无人使用（且无刮削任务）会自动退出进程释放资源。退出后 fnOS 会显示应用「未运行」，需要到<b>应用中心 → 音乐数据刮削 → 启用</b>才能再次打开。默认关闭（进程常驻，不自动退出）。</label>
       </div>
       <div class="row">
-        <label><b>元数据源（可多选；单项刮削候选 = 每个勾选源前 10 条）</b></label>
+        <label><b>元数据源（可多选）</b></label>
         <span id="source_checks"></span>
       </div>
       <div class="row">
@@ -333,21 +290,6 @@
       <div class="row">
         <label>AcoustID Key（指纹模式需要）</label>
         <input type="password" id="acoustid_key" style="width:280px">
-      </div>
-      <div class="row">
-        <label><b>写入字段</b></label>
-        <label><input type="checkbox" id="write_title" checked> 标题</label>
-        <label><input type="checkbox" id="write_artist" checked> 歌手</label>
-        <label><input type="checkbox" id="write_year" checked> 年份</label>
-        <label><input type="checkbox" id="write_album" checked> 专辑</label>
-        <label><input type="checkbox" id="write_album_artist" checked> 专辑艺人</label>
-        <label><input type="checkbox" id="write_genre" checked> 流派</label>
-        <label><input type="checkbox" id="write_track" checked> 曲目号</label>
-        <label><input type="checkbox" id="write_disc" checked> 碟号</label>
-        <label><input type="checkbox" id="write_company" checked> 唱片公司</label>
-        <label><input type="checkbox" id="write_language" checked> 语言</label>
-        <label><input type="checkbox" id="write_cover" checked> 封面图</label>
-        <label><input type="checkbox" id="write_lyrics" checked> 歌词</label>
       </div>
       <div class="row">
         <label><input type="checkbox" id="write_enabled"> <b style="color:var(--warn)">启用真实写入</b>（关闭=仅学习/预览；开启后才会真正写入，且人工处理过的歌曲才会被永久记忆并自动排除）</label>
@@ -401,33 +343,37 @@
   </div>
 </main>
 
-<!-- ======= 歌曲详情弹窗（编辑 + 查看/预览 整合） ======= -->
-<div class="modal" id="detailModal">
-  <div class="modal-box">
-    <div style="display:flex;justify-content:space-between;align-items:center">
-      <h3 id="dtTitle" style="margin:0">歌曲详情</h3>
-      <button class="secondary" onclick="closeDetail()">关闭</button>
+<!-- ======= 手动刮削窗口（居中自适应） ======= -->
+<div class="modal" id="scrubModal">
+  <div class="modal-box scrub-box">
+    <div class="scrub-head">
+      <h3 id="scName">手动刮削</h3>
+      <span class="muted" id="scMeta"></span>
+      <button class="secondary" onclick="closeScrub()">关闭</button>
     </div>
-    <div class="muted" id="dtPath" style="margin:6px 0;word-break:break-all"></div>
-    <!-- 试听区 -->
-    <div style="border:1px solid #e3e6ea;border-radius:8px;padding:8px 10px;margin:6px 0">
-      <div class="muted" style="margin-bottom:4px"><b style="color:#333">试听（本地音频）</b></div>
-      <div id="dtCandInfo" class="muted" style="margin-bottom:4px;font-size:12px"></div>
-      <audio id="dtAudio" controls style="width:100%"></audio>
-      <div class="muted" style="margin-top:6px;font-size:12px">
-        <b id="dtLyrLabel" style="color:var(--accent)">▌候选歌词</b>
-        <span class="muted" id="dtLyrSrc"></span>
+    <div class="player">
+      <audio id="scAudio" controls></audio>
+      <div class="muted" style="margin-top:5px" id="scLrcHint"></div>
+      <div class="lrc-box" id="scLrc">（加载中…）</div>
+    </div>
+    <div id="scFields"></div>
+    <div class="lrc-cmp" id="scLyricsBox">
+      <div class="lrc-col">
+        <div class="lrc-title">原有内嵌歌词</div>
+        <textarea id="scLrcCur" readonly placeholder="（文件内没有内嵌歌词）"></textarea>
       </div>
-      <div id="dtLyrics" style="margin-top:4px;max-height:150px;overflow:auto;background:#f8f9fa;border-radius:6px;padding:6px 10px;font-size:12px;white-space:pre-wrap">（暂无歌词）</div>
+      <div class="lrc-col">
+        <div class="lrc-title">候选歌词
+          <button class="secondary" id="scLrcScrape" onclick="toggleLyricsMenu(event)">手动刮削 ▾</button>
+          <button class="ok" id="scLrcWrite" onclick="writeLyrics()" disabled>写入</button>
+        </div>
+        <textarea id="scLrcCand" placeholder="点「手动刮削」从候选里选一个，或直接粘贴歌词后写入"></textarea>
+      </div>
     </div>
-    <!-- 候选区 -->
-    <div id="dtCands" style="margin:6px 0"></div>
-    <!-- 字段编辑区 -->
-    <div id="dtFields"></div>
   </div>
 </div>
 
-<!-- ======= 删除确认弹窗（只删任务 / 连文件一起删） ======= -->
+<!-- ======= 删除确认弹窗 ======= -->
 <div class="modal" id="delModal">
   <div class="modal-box" style="width:min(520px,96vw)">
     <div style="display:flex;justify-content:space-between;align-items:center">
@@ -443,30 +389,40 @@
   </div>
 </div>
 
+<!-- ======= 浮动层：状态菜单 / 重命名 / 候选值下拉 ======= -->
+<div class="pop status-menu" id="statusMenu"></div>
+<div class="pop rename-pop" id="renamePop"></div>
+<div class="pop cand-menu" id="candMenu"></div>
+
 <script>
-// 开发者收款码（自由自愿打赏；应用完全免费，赞赏不影响任何功能）
 const DONATE_WX = "data:image/png;base64,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";
 const DONATE_ALI = "data:image/jpeg;base64,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";
 
 const $ = id => document.getElementById(id);
-const STATUS_CN = {pending:"待处理", processing:"处理中", auto_ok:"自动写入", manual_pending:"待人工", manual_done:"已人工", skipped:"跳过", error:"错误"};
-const FIELD_LABELS = {cover:"封面", artist:"歌手", year:"年份", lyrics:"歌词", title:"标题"};
-// 可编辑字段：显示名 -> (后端字段名, 候选取值键)
-const EDIT_FIELDS = [
-  ["title","标题","title"], ["artist","歌手","artist"], ["album","专辑","album"],
-  ["album_artist","专辑艺人","album_artist"], ["year","年份","date"], ["genre","流派","genre"],
-  ["track","曲目号","track"], ["track_total","总曲目","track_total"], ["disc","碟号","disc"],
-  ["publisher","唱片公司","publisher"], ["language","语言","language"],
-  ["lyrics","歌词(多行)","lyrics"], ["cover","封面图(上传/候选)","cover_url"],
-];
-let coverCache = {};
-let pendingData = [];
-const lyricsCache = {};
-const lyricsOpen = new Set();
-const pageState = {total:{page:0,q:""}, autowrite:{page:0}, pending:{page:0},
-                   manualdone:{page:0,q:""}, skip:{page:0,q:""}, error:{page:0}};
+const PER_PAGE = 20;
 
-function msg(t) { const m=$("msg"); m.textContent=t; m.style.display="block"; setTimeout(()=>m.style.display="none", 3000); }
+// 6 种状态（+全部）：队列过滤器与状态标签共用一份定义
+const STATUSES = [
+  {key:"all",            label:"全部"},
+  {key:"auto_ok",        label:"自动写入"},
+  {key:"pending",        label:"待刮削前"},
+  {key:"manual_done",    label:"已人工"},
+  {key:"manual_pending", label:"待人工关"},
+  {key:"skipped",        label:"跳过"},
+  {key:"error",          label:"错误"},
+];
+const ST_LABEL = Object.fromEntries(STATUSES.map(s => [s.key, s.label]));
+
+let fieldDefs = [];                 // [{key,label,special}]（/api/fields）
+let activeFields = [];              // 生效字段 key 列表
+let qState = {status:"all", q:"", page:0};   // 队列当前过滤/分页
+let queueItems = [];                // 当前页任务（供菜单回调取数据）
+let delFile = "";
+let exportTimer = null;
+
+// ---------------- 通用工具 ----------------
+function msg(t){ const m=$("msg"); m.textContent=t; m.style.display="block";
+  clearTimeout(msg._t); msg._t = setTimeout(()=>m.style.display="none", 3200); }
 function esc(s){ return String(s??"").replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
 // 常见英文错误 → 中文兜底翻译（后端已尽量输出中文，这里再兜一层）
 function cnErr(s){
@@ -485,11 +441,6 @@ function cnErr(s){
   ];
   for(const [re, cn] of rules){ if(re.test(str)) return str.replace(re, cn); }
   return str;
-}
-function coverUrl(albummid){ if(!albummid) return ""; if(!coverCache[albummid]) coverCache[albummid] = `https://y.gtimg.cn/music/photo_new/T002R300x300M000${albummid}.jpg`; return coverCache[albummid]; }
-function coverHtml(albummid){
-  if(!albummid) return '<div class="noimg">🎵</div>';
-  return `<img src="${coverUrl(albummid)}" onerror="this.outerHTML='<div class=noimg>🎵</div>'">`;
 }
 function getBase(){
   const p = location.pathname;
@@ -512,32 +463,23 @@ async function api(url, opts){
   try { return JSON.parse(text); }
   catch(e){ throw new Error("响应不是 JSON: " + text.slice(0,120)); }
 }
+function jsonPost(url, body){
+  return api(url, {method:"POST", headers:{"Content-Type":"application/json"},
+                   body: JSON.stringify(body)});
+}
+function fieldLabel(key){ const f = fieldDefs.find(x=>x.key===key); return f ? f.label : key; }
+function isActive(key){ return activeFields.includes(key); }
 
-// ---------------- 页面切换 ----------------
+// ---------------- 页面切换（队列 / 设置） ----------------
 function showPage(name){
+  closeAllPops();
   document.querySelectorAll(".page").forEach(p => p.classList.remove("active"));
   $("page-" + name).classList.add("active");
-  document.querySelectorAll("#topnav button").forEach(b => b.classList.remove("active"));
-  $("nav-" + name).classList.add("active");
-  ({total:loadTotal, autowrite:loadAutoWrite, pending:loadPending,
-    manualdone:loadManualDone, skip:loadSkip, error:loadError, config:loadConfig})[name]();
+  $("gearBtn").classList.toggle("on", name === "config");
+  if(name === "config") loadConfig(); else { queueSearch(); loadStats(); }
 }
 
-// 通用分页条
-function pagerHtml(elId, total, page, perPage){
-  const pages = Math.max(1, Math.ceil(total / perPage));
-  return `<button class="secondary" onclick="pageGo('${elId}',${page-1})" ${page<=0?"disabled":""}>‹ 上一页</button>` +
-         `<span>第 ${page+1} / ${pages} 页（共 ${total} 条）</span>` +
-         `<button class="secondary" onclick="pageGo('${elId}',${page+1})" ${page>=pages-1?"disabled":""}>下一页 ›</button>`;
-}
-function pageGo(name, page){
-  if(page < 0) return;
-  pageState[name].page = page;
-  ({total:loadTotal, autowrite:loadAutoWrite, pending:loadPending,
-    manualdone:loadManualDone, skip:loadSkip, error:loadError})[name]();
-}
-
-// ---------------- 顶栏统计与状态 ----------------
+// ---------------- 顶栏统计 ----------------
 async function loadStats(){
   const s = await api("/api/stats");
   const total = Object.values(s).reduce((a,b)=>a+b,0);
@@ -547,949 +489,589 @@ async function loadStats(){
   $("stats").innerHTML =
     `<span>总数 <b>${total}</b></span>` +
     `<span>自动写入 <b style="color:var(--ok)">${s.auto_ok||0}</b></span>` +
-    `<span>待人工 <b style="color:var(--warn)">${s.manual_pending||0}</b></span>` +
+    `<span>待人工关 <b style="color:var(--warn)">${s.manual_pending||0}</b></span>` +
     `<span>已人工 <b style="color:var(--accent)">${s.manual_done||0}</b></span>` +
     `<span>跳过 <b>${s.skipped||0}</b></span>` +
     `<span>错误 <b style="color:var(--err)">${s.error||0}</b></span>` +
     `<span>进度 <b>${pct}%</b></span>`;
   $("emptyGuide").style.display = total ? "none" : "block";
+  renderChips(s);
 }
 
-// ---------------- 总数页面 ----------------
-let totalLoading = false;
-async function loadTotal(){
-  if(totalLoading) return;          // 防止轮询并发重复过滤（很慢）
-  totalLoading = true;
-  const st = pageState.total;
-  const per = 100;
-  const q = $("total_q").value.trim();
-  const conds = [];
-  for(const [id, cond] of [["f_no_lyrics","no_lyrics"],["f_no_cover","no_cover"],
-      ["f_no_title","no_title"],["f_no_artist","no_artist"],["f_no_album","no_album"],
-      ["f_no_year","no_year"],["f_no_genre","no_genre"],["f_no_track","no_track"]]){
-    const el = $(id);
-    if(el && el.checked) conds.push(cond);
+// ---------------- 状态过滤器 ----------------
+function renderChips(stats){
+  const counts = {all: 0};
+  for(const s of STATUSES){ if(s.key !== "all") counts[s.key] = stats[s.key] || 0; }
+  // 「自动写入」过滤同时包含正在处理的（processing），计数合并显示
+  counts.auto_ok = (counts.auto_ok||0) + (stats.processing || 0);
+  counts.all = STATUSES.reduce((a,s)=> a + (s.key==="all" ? 0 : counts[s.key]||0), 0);
+  $("chipbar").innerHTML = STATUSES.map(s =>
+    `<span class="chip ${s.key}${qState.status===s.key?" active":""}" onclick="setFilter('${s.key}')">` +
+    `${s.label} <span class="n">${counts[s.key]||0}</span></span>`).join("");
+}
+function setFilter(key){
+  qState.status = key; qState.page = 0;
+  loadStats().catch(()=>{});
+  loadQueue().catch(e=>msg("加载失败：" + (e.message||e)));
+}
+
+// ---------------- 队列列表 ----------------
+function queueSearch(){ qState.q = $("q").value.trim(); qState.page = 0;
+  loadQueue().catch(e=>msg("加载失败：" + (e.message||e))); }
+function clearQueueSearch(){ $("q").value = ""; queueSearch(); }
+function queuePage(p){
+  if(p < 0) return;
+  qState.page = p;
+  loadQueue().catch(e=>msg("加载失败：" + (e.message||e)));
+}
+
+async function loadQueue(){
+  const params = new URLSearchParams({limit:PER_PAGE, offset:qState.page*PER_PAGE});
+  if(qState.status !== "all") params.set("status", qState.status);
+  if(qState.q) params.set("q", qState.q);
+  if(advFilter.size) params.set("filter", Array.from(advFilter).join(","));
+  const d = await api("/api/tasks?" + params.toString());
+  queueItems = d.items || [];
+  renderAdvFilter();
+  renderBatchBar();
+  const box = $("queue");
+  if(!queueItems.length){
+    box.innerHTML = `<div class="empty">${qState.q ? "没有匹配的歌曲" : "该状态下暂无歌曲"}</div>`;
+  } else {
+    box.innerHTML = queueItems.map(renderCard).join("");
   }
-  const filter = conds.join(",");
-  const url = `/api/tasks?limit=${per}&offset=${st.page*per}${q?"&q="+encodeURIComponent(q):""}${filter?"&filter="+encodeURIComponent(filter):""}`;
-  // 过滤时首次要逐个读文件标签，可能较慢，先给提示
-  const tb = $("totalTable").querySelector("tbody");
-  if(filter){
-    tb.innerHTML = '<tr><td colspan="6" class="empty">正在过滤（需读取每首歌的真实标签，首次约需 10~30 秒，请稍候）…</td></tr>';
-  }
+  const pages = Math.max(1, Math.ceil((d.total||0)/PER_PAGE));
+  $("queue_pager").innerHTML =
+    `<button class="secondary" onclick="queuePage(${qState.page-1})" ${qState.page<=0?"disabled":""}>‹ 上一页</button>` +
+    `<span>第 ${qState.page+1} / ${pages} 页（共 ${d.total||0} 条）</span>` +
+    `<button class="secondary" onclick="queuePage(${qState.page+1})" ${qState.page>=pages-1?"disabled":""}>下一页 ›</button>`;
+  $("queue_info").textContent = `当前：${ST_LABEL[qState.status]||"全部"}｜共 ${d.total||0} 条`;
+}
+
+// 卡片：文件名 + 状态标签 + 操作列（得分/已写入/匹配结果列已去掉）
+function renderCard(t){
+  const st = t.status === "processing" ? "processing" : t.status;
+  const stLabel = t.status === "processing" ? "正在写入" : (ST_LABEL[t.status] || t.status);
+  const f = esc(t.path).replace(/'/g,"\\'");
+  const note = (t.status === "error" && t.error)
+    ? `<div class="qnote">${esc(cnErr(t.error))}</div>` : "";
+  return `<div class="qcard" data-file="${esc(t.path)}">
+    <div class="qmain">
+      <span class="qname">${esc(t.name)}</span>
+      <span class="sttag ${st}" onclick="openStatusMenu(event, '${f}', '${t.status}')">${esc(stLabel)}</span>
+    </div>
+    <div class="qops">
+      <button class="secondary" onclick="openRename(event, '${f}')">重命名</button>
+      <button onclick="openScrub('${f}')">手动刮削</button>
+      <button class="danger" onclick="confirmDelete('${f}', '${esc(t.name).replace(/'/g,"\\'")}')">删除</button>
+    </div>
+    ${note}
+  </div>`;
+}
+
+// 「高级筛选」：只显示生效字段对应的缺失条件
+const FILTER_DEFS = [
+  {key:"no_title",      field:"title",      label:"无歌名"},
+  {key:"no_artist",     field:"artist",     label:"无歌手"},
+  {key:"no_album",      field:"album",      label:"无专辑"},
+  {key:"no_year",       field:"year",       label:"无年份"},
+  {key:"no_genre",      field:"genre",      label:"无流派"},
+  {key:"no_track",      field:"track",      label:"无曲目"},
+  {key:"no_cover",      field:"cover",      label:"无封面"},
+  {key:"no_lyrics",     field:"lyrics",     label:"无歌词"},
+];
+let advFilter = new Set();
+function renderAdvFilter(){
+  const usable = FILTER_DEFS.filter(f => isActive(f.field));
+  if(!usable.length){ $("advfilter").innerHTML = ""; return; }
+  $("advfilter").innerHTML = `<label><b>元数据筛选：</b></label>` +
+    usable.map(f => `<label><input type="checkbox" ${advFilter.has(f.key)?"checked":""}
+       onchange="toggleAdvFilter('${f.key}')"> ${f.label}</label>`).join("") +
+    `<button class="secondary" onclick="clearAdvFilter()">清除筛选</button>`;
+}
+function toggleAdvFilter(key){
+  advFilter.has(key) ? advFilter.delete(key) : advFilter.add(key);
+  qState.page = 0;
+  loadQueue().catch(e=>msg("加载失败：" + (e.message||e)));
+}
+function clearAdvFilter(){ advFilter.clear(); qState.page = 0;
+  loadQueue().catch(e=>msg("加载失败：" + (e.message||e))); }
+
+// 批量操作：按当前过滤状态给可用项
+function renderBatchBar(){
+  const acts = [];
+  if(qState.status === "pending")
+    acts.push(`<button class="ok" onclick="scrapePending()">▶ 刮削待刮削前队列</button>`);
+  if(qState.status === "manual_pending")
+    acts.push(`<button class="ok" onclick="batchBest()">批量选用最高分</button>`,
+              `<button class="warn" onclick="batchSkip()">批量跳过</button>`,
+              `<button class="secondary" onclick="reprocessPending()">🔄 重新刮削本队列</button>`);
+  if(qState.status === "auto_ok")
+    acts.push(`<button class="secondary" onclick="exportAutoOk()">💾 导出已写入到缓存</button>`,
+              `<button class="secondary" onclick="writeAuto()">✍ 补写入未写入的</button>`);
+  if(qState.status === "skipped")
+    acts.push(`<button class="secondary" onclick="unskipAll()">↩ 全部恢复为待刮削前</button>`);
+  if(qState.status === "error")
+    acts.push(`<button class="secondary" onclick="retryErrors()">🔄 全部重试</button>`);
+  $("batchbar").innerHTML = acts.join("");
+}
+
+// ---------------- 浮动层统一管理 ----------------
+function closeAllPops(){
+  ["statusMenu","renamePop","candMenu"].forEach(id => $(id).classList.remove("open"));
+  const p = $("afPanel"); if(p) p.classList.remove("open");
+}
+function placePop(el, anchor){
+  const r = anchor.getBoundingClientRect();
+  el.classList.add("open");
+  const w = el.offsetWidth, h = el.offsetHeight;
+  let left = Math.min(r.left, window.innerWidth - w - 10);
+  let top = r.bottom + 6;
+  if(top + h > window.innerHeight - 8) top = Math.max(8, r.top - h - 6);
+  el.style.left = Math.max(8, left) + "px";
+  el.style.top = top + "px";
+}
+document.addEventListener("click", ev => {
+  const inside = ev.target.closest(".pop, .sttag, .dropdown");
+  if(!inside) closeAllPops();
+});
+window.addEventListener("resize", closeAllPops);
+window.addEventListener("scroll", closeAllPops, true);
+
+// ---------------- 状态标签：点击指定状态 ----------------
+let statusTarget = {file:"", cur:""};
+function openStatusMenu(ev, file, cur){
+  ev.stopPropagation();
+  const same = $("statusMenu").classList.contains("open") &&
+               statusTarget.file === file;
+  closeAllPops();
+  if(same) return;
+  statusTarget = {file, cur};
+  $("statusMenu").innerHTML = STATUSES.filter(s => s.key !== "all").map(s =>
+    `<div class="srow">
+       <span class="sname ${s.key}">${s.label}</span>
+       <button class="sgo" ${s.key===cur ? "disabled" : ""}
+               onclick="setTaskStatus('${s.key}')">指定</button>
+     </div>`).join("");
+  placePop($("statusMenu"), ev.currentTarget);
+}
+async function setTaskStatus(status){
+  const file = statusTarget.file;
+  closeAllPops();
   try{
-    const d = await api(url);
-    let info = q ? `搜索「${q}」` : "";
-    if(filter){
-      const labels = conds.map(c => ({no_lyrics:"无歌词",no_cover:"无封面",no_title:"无标题",no_artist:"无歌手",no_album:"无专辑",no_year:"无年份",no_genre:"无流派",no_track:"无曲目"}[c]||c)).join(" + ");
-      info = (info ? info + " 且 " : "") + `过滤「${labels}」`;
-    }
-    $("total_info").textContent = info ? `${info}：共 ${d.total} 条` : "";
-    if(!d.items.length){ tb.innerHTML = '<tr><td colspan="6" class="empty">' + (filter ? "没有符合过滤条件的歌曲（无该过滤标签的歌曲）" : "暂无任务，先点顶栏「① 扫描目录」") + '</td></tr>'; }
-    else tb.innerHTML = d.items.map(t => taskRow(t, true)).join("");
-    $("total_pager").innerHTML = pagerHtml("total", d.total, st.page, per);
-  }catch(e){
-    tb.innerHTML = `<tr><td colspan="6" class="empty">加载失败：${esc(e.message||e)}</td></tr>`;
-  }
-  totalLoading = false;
-  loadFilterCounts();   // 同步刷新每个过滤器的数量
-}
-function clearFilter(){
-  for(const id of ["f_no_lyrics","f_no_cover","f_no_title","f_no_artist","f_no_album","f_no_year","f_no_genre","f_no_track"]){
-    $(id).checked = false;
-  }
-  pageState.total.page = 0;
-  loadTotal();
+    await jsonPost("/api/task-status", {file, status});
+    msg(`已指定为「${ST_LABEL[status]}」`);
+    await loadStats(); await loadQueue();
+  }catch(e){ msg("指定失败：" + (e.message||e)); }
 }
 
-async function scrapePending(){
-  msg("正在刮削全部「待处理」文件…");
-  try{
-    const r = await api("/api/scrape-pending", {method:"POST"});
-    msg(r.count ? `已对 ${r.count} 个待处理文件启动刮削` : "当前没有待处理文件");
-    loadTotal(); loadAutoWrite(); loadStats(); loadFilterCounts();
-  }catch(e){ msg("启动失败：" + (e.message||e)); }
-}
-
-// 过滤器数量实时统计（无歌词 X 首 / 无封面 X 首…）
-let fcLoading = false;
-const FC_KEYS = [["no_lyrics","fc_no_lyrics"],["no_cover","fc_no_cover"],
-  ["no_title","fc_no_title"],["no_artist","fc_no_artist"],["no_album","fc_no_album"],
-  ["no_year","fc_no_year"],["no_genre","fc_no_genre"],["no_track","fc_no_track"]];
-async function loadFilterCounts(){
-  if(fcLoading) return;
-  fcLoading = true;
-  try{
-    const d = await api("/api/filter-counts");
-    for(const [k, elId] of FC_KEYS){
-      const el = $(elId);
-      if(el) el.textContent = "(" + (d[k] ?? "?") + ")";
-    }
-  }catch(e){ /* 首次较慢或失败时保留占位 */ }
-  fcLoading = false;
-}
-
-function taskRow(t, withEdit){
-  const written = (t.written||"").split(",").filter(Boolean).map(w => FIELD_LABELS[w] || w).join("、");
-  const match = `${esc(t.title||"")} ${t.artist?"- "+esc(t.artist):""} ${t.year?"("+esc(t.year)+")":""}`;
-  let btns = "";
-  if(withEdit) btns += `<button class="secondary" onclick="openDetail('${esc(t.path).replace(/'/g,"\\'")}')">编辑</button>`;
-  if(t.status === "manual_done") btns += `<button class="warn" onclick="restoreTask('${esc(t.path).replace(/'/g,"\\'")}')">移回人工</button>`;
-  return `<tr><td data-label="文件">${esc(t.name)}</td>` +
-    `<td data-label="状态"><span class="tag ${esc(t.status)}">${STATUS_CN[t.status]||esc(t.status)}</span></td>` +
-    `<td data-label="匹配结果">${match}</td>` +
-    `<td data-label="得分">${t.score!=null?(t.score/100).toFixed(2):""}</td>` +
-    `<td data-label="已写入">${written ? `<span style="color:var(--ok)">${esc(written)}</span>` : ""}</td>` +
-    `<td data-label="操作">${btns}</td></tr>`;
-}
-async function restoreTask(file){
-  if(!confirm("把这首歌移回人工辅助队列？\n\n将删除它的已人工永久记忆（哈希）与决策记录，任务回到「待人工」状态，可重新参与选择；文件本身不会被修改。")) return;
-  try{
-    await api("/api/tasks/restore", {method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({file})});
-    msg("已移回人工辅助队列");
-    loadTotal(); loadManualDone(); loadPending(); loadStats(); refreshCurrent();
-  }catch(e){ msg("操作失败：" + (e.message||e)); }
-}
-
-// ---------------- 自动写入页面 ----------------
-async function loadAutoWrite(){
-  const st = pageState.autowrite, per = 100;
-  const box = $("autowrite");
-  try{
-    const cur = await api("/api/tasks?status=processing&limit=100");
-    const done = await api(`/api/tasks?status=auto_ok&limit=${per}&offset=${st.page*per}`);
-    $("autowrite_pager").innerHTML = pagerHtml("autowrite", done.total, st.page, per);
-    let html = "";
-    if(cur.items.length){
-      html += `<div class="card" style="border:2px solid var(--ok)"><b style="color:var(--ok)">● 正在写入（队列第一位）：</b></div>`;
-      html += cur.items.map(t => `<div class="cand"><div class="info"><b>${esc(t.name)}</b><br><span class="muted">${esc(t.title||"")} ${t.artist?"- "+esc(t.artist):""}</span></div><span class="tag processing">处理中</span></div>`).join("");
-    }
-    if(done.items.length){
-      html += `<div class="muted" style="margin:10px 0 4px">— 已完成（顺延在后的记录）—</div>`;
-      html += done.items.map(t => `<div class="cand"><div class="info"><b>${esc(t.name)}</b><br><span class="muted">${esc(t.title||"")} ${t.artist?"- "+esc(t.artist):""}</span></div><span class="tag auto_ok">已写入</span></div>`).join("");
-    }
-    if(!html) html = '<div class="empty">当前没有自动写入任务（点顶栏「② 开始刮削」开始）</div>';
-    box.innerHTML = html;
-  }catch(e){ box.innerHTML = `<div class="empty">加载失败：${esc(e.message||e)}</div>`; }
-}
-
-// ---------------- 导出已写入歌曲到缓存（下次全量扫描零网络） ----------------
-let exportTimer = null;
-async function exportAutoOk(){
-  try{
-    const r = await api("/api/cache/export-auto-ok", {method:"POST"});
-    if(r.running){ msg("已有导出任务在运行"); return; }
-    msg(`开始导出 ${r.total} 首已写入歌曲到缓存…（后台执行，可关闭页面等待）`);
-    $("export_status").textContent = `导出中：0 / ${r.total}（正在读取文件标签…）`;
-    if(exportTimer) clearInterval(exportTimer);
-    exportTimer = setInterval(async () => {
-      try{
-        const s = await api("/api/cache/export-status");
-        if(s.running){
-          $("export_status").textContent = `导出中：${s.done} / ${s.total}（失败 ${s.errors}）`;
-        }else{
-          clearInterval(exportTimer); exportTimer = null;
-          $("export_status").textContent = `导出完成：${s.done} 首已写入缓存，失败 ${s.errors} 首。下次全量扫描命中缓存直接写入，不再请求服务器。`;
-          msg("导出完成");
-        }
-      }catch(e){}
-    }, 2000);
-  }catch(e){ msg("导出失败：" + (e.message||e)); }
-}
-
-// ---------------- 待人工页面 ----------------
-async function loadPending(){
-  // 手动搜索输入框正在输入时跳过列表重绘：
-  // 页面每 5 秒轮询会重建待人工卡片 DOM，若此刻替换正在输入的输入框，
-  // 焦点/光标会被重置（表现为输入指针自动跳走）。等用户离开输入框后再刷新。
-  const _ae = document.activeElement;
-  if(_ae && (_ae.id||"").startsWith("ms-")) return;
-  const st = pageState.pending, per = 100;
-  const d = await api(`/api/pending?limit=${per}&offset=${st.page*per}`);
-  pendingData = d.items;
-  $("pending_pager").innerHTML = pagerHtml("pending", d.total, st.page, per);
-  const box = $("pending");
-  if(!pendingData.length){ box.innerHTML = '<div class="empty">当前没有待人工决策的文件</div>'; return; }
-  box.innerHTML = "";
-  for(const [i,t] of pendingData.entries()){
-    const div = document.createElement("div");
-    div.className = "card";
-    div.style.marginBottom = "10px";
-    const msSt = manualState[t.path] || {open:false, title:"", artist:""};
-    div.innerHTML = `<div><b>${esc(t.name)}</b> <span class="muted">${esc(cnErr(t.error||""))}</span>` +
-      `<button class="secondary" style="margin-left:8px" onclick="renameFile('${esc(t.path).replace(/'/g,"\\'")}')">重命名</button>` +
-      `<button class="secondary" style="margin-left:6px" onclick="toggleManualSearch(${i})" title="文件名识别不对时，手动输入歌名/歌手重新搜索">✎ 手动搜索</button></div>` +
-      `<div id="ms-${i}" style="display:${msSt.open?"block":"none"};margin-top:6px;background:var(--bg2,#f4f6f8);border:1px dashed var(--line,#ccc);border-radius:6px;padding:8px;gap:6px">` +
-        `<div style="margin-bottom:4px" class="muted">文件名不是「歌名-歌手」格式或识别不对？手动输入正确的歌名与歌手搜索：</div>` +
-        `<input id="ms-t-${i}" placeholder="歌名（必填）" style="width:32%;min-width:140px;padding:5px 8px;border:1px solid #ccc;border-radius:4px" value="${esc(msSt.title || autoTitleHint(t.name))}" oninput="msSaveInput(${i})">` +
-        `<input id="ms-a-${i}" placeholder="歌手（可留空）" style="width:26%;min-width:120px;padding:5px 8px;border:1px solid #ccc;border-radius:4px" value="${esc(msSt.artist || autoArtistHint(t.name))}" oninput="msSaveInput(${i})">` +
-        `<button class="ok" onclick="manualSearch(${i})">按输入搜索</button>` +
-        `<button class="secondary" onclick="toggleManualSearch(${i})">收起</button>` +
-      `</div>`;
-    for(const c of (t.candidates||[])){
-      const card = document.createElement("div");
-      card.className = "cand";
-      // 时长对比：文件时长 vs 候选时长 vs 差值
-      const fdur = parseInt(t.file_duration||0,10);
-      const cdur = parseInt(c.duration||0,10);
-      const fmt = (s) => s ? `${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}` : "-";
-      let durHtml = `<span class="muted">文件 ${fmt(fdur)} ｜ 候选 ${fmt(cdur)}</span>`;
-      if(fdur && cdur){
-        const diff = Math.abs(fdur - cdur);
-        durHtml += ` ｜ <b style="color:${diff<=30?"var(--ok)":"var(--warn)"}">差 ${diff}s</b>`;
-      }
-      card.innerHTML =
-        coverHtml(c.albummid) +
-        `<div class="info"><b>${esc(c.title)}</b> - ${esc(c.artist)}<br>` +
-        `<span class="muted">专辑 ${esc(c.album||"-")} ｜ 年份 ${esc(c.year||"-")} ｜ ${durHtml}</span>` +
-        (c.verified?' <span class="tag" style="background:#e6f7ee;color:var(--ok)" title="结果的歌名与歌手都出现在文件名中">反推✓</span>':'') +
-        ` <span class="tag" style="background:#e7f3ff;color:var(--accent)">${esc(c.source||"")}</span></div>` +
-        `<span class="score">${(c.score/100).toFixed(2)}</span>` +
-        `<button class="secondary" onclick="openDetail('${esc(t.path).replace(/'/g,"\\'")}','${c.songmid}')">查看/预览</button>` +
-        `<button class="ok" onclick="decide('${esc(t.path).replace(/'/g,"\\'")}','${c.songmid}')">选用</button>`;
-      div.appendChild(card);
-      if(lyricsOpen.has(c.songmid) && lyricsCache[c.songmid]){
-        const box2 = document.createElement("div");
-        box2.style.cssText = "margin-top:6px;max-height:180px;overflow:auto;background:#f8f9fa;padding:8px;border-radius:4px;font-size:12px;white-space:pre-wrap;width:100%";
-        box2.textContent = lyricsCache[c.songmid];
-        card.appendChild(box2);
-      }
-    }
-    const btns = document.createElement("div");
-    btns.className = "row";
-    btns.innerHTML =
-      `<button class="secondary" onclick="refresh('${esc(t.path).replace(/'/g,"\\'")}')">重新搜索</button>` +
-      `<button class="secondary" onclick="recognize('${esc(t.path).replace(/'/g,"\\'")}')">音频指纹识别</button>` +
-      `<button class="secondary" onclick="openDetail('${esc(t.path).replace(/'/g,"\\'")}')">编辑</button>` +
-      `<button class="warn" onclick="decide('${esc(t.path).replace(/'/g,"\\'")}','',true)">跳过不处理</button>` +
-      `<button class="danger" onclick="confirmDelete('${esc(t.path).replace(/'/g,"\\'")}','${esc(t.name).replace(/'/g,"\\'")}','待人工')">删除</button>`;
-    div.appendChild(btns);
-    box.appendChild(div);
-  }
-}
-
-// 手动搜索：文件名不是「歌名-歌手」格式 / 识别不对时，手动输入歌名(歌手)搜索
-function stemOf(name){
-  const s = String(name||"").replace(/\.[^.]+$/, "").replace(/^\s*\d{1,3}\s*[.\-_、]\s*/, "").trim();
-  return s;
-}
-function autoTitleHint(name){ return stemOf(name); }   // 预填：去掉扩展名与曲目号后的完整名
-function autoArtistHint(name){ return ""; }            // 歌手不猜，避免误导（可能反序）
-
-// 手动搜索面板状态：页面每 5 秒轮询会重建待人工列表 DOM，
-// 若不保存展开/输入状态，重绘后面板会被重置为收起（表现为"点开自己就没了"）。
-// key=文件路径, value={open:bool, title:string, artist:string}
-const manualState = {};
-
-function msGet(i){
-  const t = pendingData[i]; if(!t) return null;
-  if(!manualState[t.path]) manualState[t.path] = {open:false, title:"", artist:""};
-  return manualState[t.path];
-}
-function toggleManualSearch(i){
-  const st = msGet(i); if(!st) return;
-  st.open = !st.open;                 // 记录展开状态（loadPending 重绘后据此恢复）
-  const el = $("ms-"+i);
-  if(el) el.style.display = st.open ? "block" : "none";
-}
-function msSaveInput(i){               // 输入时同步保存，重绘不丢内容
-  const st = msGet(i); if(!st) return;
-  st.title = ($("ms-t-"+i)||{}).value || "";
-  st.artist = ($("ms-a-"+i)||{}).value || "";
-}
-async function manualSearch(i){
-  const t = pendingData[i]; if(!t) return;
-  const title = ($("ms-t-"+i)||{}).value?.trim() || "";
-  const artist = ($("ms-a-"+i)||{}).value?.trim() || "";
-  if(!title && !artist){ msg("请至少输入歌名"); return; }
-  try{
-    const r = await api("/api/manual-search", {method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({file: t.path, title, artist})});
-    msg(`手动搜索完成：找到 ${r.count||0} 条候选（可在下方选用，或继续调整关键词重搜）`);
-    // 搜索后保留面板展开与已输入内容，便于继续微调；仅刷新候选
-    loadPending(); loadStats();
-  }catch(e){ msg("搜索失败：" + (e.message||e)); }
-}
-
-async function renameFile(file){
+// ---------------- 重命名（跟随按钮的小浮层） ----------------
+let renameFile = "";
+function openRename(ev, file){
+  ev.stopPropagation();
+  const same = $("renamePop").classList.contains("open") && renameFile === file;
+  closeAllPops();
+  if(same) return;
+  renameFile = file;
   const cur = file.split("/").pop();
-  const name = prompt("输入新文件名（含扩展名，可含歌手）：", cur);
-  if(!name || name === cur) return;
+  $("renamePop").innerHTML =
+    `<div class="rrow">
+       <input type="text" id="renameInput" value="${esc(cur)}"
+              onkeydown="if(event.key==='Enter')doRename();if(event.key==='Escape')closeAllPops()">
+       <button class="ok" onclick="doRename()">确认</button>
+       <button class="secondary" onclick="closeAllPops()">取消</button>
+     </div>`;
+  placePop($("renamePop"), ev.currentTarget);
+  const inp = $("renameInput");
+  inp.focus(); inp.select();
+}
+async function doRename(){
+  const file = renameFile;
+  const name = ($("renameInput").value || "").trim();
+  if(!file || !name) return;
+  if(name === file.split("/").pop()){ closeAllPops(); return; }
+  closeAllPops();
   try{
-    await api("/api/rename", {method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({file, new_name: name})});
+    await jsonPost("/api/rename", {file, new_name: name});
     msg("已重命名为 " + name);
-    loadPending(); loadStats(); refreshCurrent();
+    await loadQueue();
   }catch(e){ msg("重命名失败：" + (e.message||e)); }
 }
 
-async function decide(file, songmid, skip=false, fields=null){
-  try{
-    await api("/api/decide", {method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({file, songmid: songmid||null, skip, fields})});
-    msg(skip ? "已跳过" : "已写入所选结果（已加入永久记忆）");
-    closeDetail();
-    loadPending(); loadStats(); refreshCurrent();
-  }catch(e){ msg("操作失败：" + (e.message||e)); }
-}
-
-// ---------------- 候选选用（人工决策） ----------------
-async function decide(file, songmid, skip=false, fields=null){
-  try{
-    await api("/api/decide", {method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({file, songmid: songmid||null, skip, fields})});
-    msg(skip ? "已跳过" : "已写入所选结果（已加入永久记忆）");
-    closeDetail();
-    loadPending(); loadStats(); refreshCurrent();
-  }catch(e){ msg("操作失败：" + (e.message||e)); }
-}
-
-async function reprocessPending(){
-  if(!confirm("重新刮削整个人工辅助队列？清空候选并重新搜索（超时/未搜到候选的会再次尝试，成功匹配可能进入自动写入）。")) return;
-  msg("正在重新刮削本队列…");
-  const r = await api("/api/reprocess-pending", {method:"POST"});
-  msg(`已重新入队 ${r.requeued} 个任务，刮削已启动`);
-  loadPending(); loadStats();
-}
-
-// ---------------- 已人工页面 ----------------
-const MD_SHOW = [["title","标题"],["artist","歌手"],["album","专辑"],["date","年份"],
-  ["genre","流派"],["language","语言"],["publisher","唱片公司"],["track","曲目"]];
-function mdTagsHtml(tags){
-  if(!tags || !Object.keys(tags).length) return '<span class="muted">（文件不存在或无法读取标签）</span>';
-  return '<span style="display:flex;flex-wrap:wrap;gap:4px 14px">' +
-    MD_SHOW.map(([k,label]) => {
-      const v = (tags[k]||"").toString().trim();
-      return `<span style="display:inline-flex;align-items:baseline;gap:4px;white-space:normal;word-break:break-all">
-        <span class="muted" style="flex-shrink:0">${label}:</span>
-        ${v ? `<b>${esc(v)}</b>` : '<span class="muted">无</span>'}</span>`;
-    }).join("") + '</span>';
-}
-async function loadManualDone(){
-  const st = pageState.manualdone, per = 100;
-  const q = $("md_q").value.trim();
-  const d = await api(`/api/manual-done?limit=${per}&offset=${st.page*per}${q?"&q="+encodeURIComponent(q):""}`);
-  $("md_info").textContent = q ? `搜索「${q}」：${d.total} 条` : "";
-  const tb = $("mdTable").querySelector("tbody");
-  tb.innerHTML = d.items.length ? d.items.map(m => `<tr>
-    <td data-label="文件">${esc(m.file_path)}${m.exists?"":" <span class='tag error'>文件缺失</span>"}</td>
-    <td data-label="元数据">${mdTagsHtml(m.tags)}</td>
-    <td data-label="处理时间" class="muted">${esc(m.done_at||"")}</td>
-    <td data-label="操作"><button class="secondary" onclick="openDetail('${esc(m.file_path).replace(/'/g,"\\'")}')">编辑</button>
-        <button class="warn" onclick="restoreTask('${esc(m.file_path).replace(/'/g,"\\'")}')">移回人工</button>
-        <button class="danger" onclick="removeManualDone('${esc(m.file_path).replace(/'/g,"\\'")}')">移除</button></td>
-  </tr>`).join("") : '<tr><td colspan="4" class="empty">暂无已人工处理记录（开启真实写入后人工选用/编辑的歌曲会出现在这里）</td></tr>';
-  $("md_pager").innerHTML = pagerHtml("manualdone", d.total, st.page, per);
-}
-async function removeManualDone(file){
-  if(!confirm("确定把这首歌从已人工处理记忆中移除吗？之后刮削会重新处理它。")) return;
-  await api("/api/manual-done/remove", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({file})});
-  msg("已移除"); loadManualDone();
-}
-
-// ---------------- 跳过页面 ----------------
-async function loadSkip(){
-  const st = pageState.skip, per = 100;
-  const q = $("skip_q").value.trim();
-  const url = `/api/tasks?status=skipped&limit=${per}&offset=${st.page*per}${q?"&q="+encodeURIComponent(q):""}`;
-  const d = await api(url);
-  $("skip_info").textContent = q ? `搜索「${q}」：${d.total} 条` : "";
-  const tb = $("skipTable").querySelector("tbody");
-  tb.innerHTML = d.items.length ? d.items.map(t => `<tr>
-    <td data-label="文件">${esc(t.name)}</td>
-    <td data-label="匹配结果">${esc(t.title||"")} ${t.artist?"- "+esc(t.artist):""}</td>
-    <td data-label="备注" class="muted">${esc(cnErr(t.error||""))}</td>
-    <td data-label="操作"><button class="secondary" onclick="openDetail('${esc(t.path).replace(/'/g,"\\'")}')">编辑</button>
-        <button class="secondary" onclick="unskipOne('${esc(t.path).replace(/'/g,"\\'")}')">恢复处理</button>
-        <button class="danger" onclick="confirmDelete('${esc(t.path).replace(/'/g,"\\'")}','${esc(t.name).replace(/'/g,"\\'")}','跳过')">删除</button></td>
-  </tr>`).join("") : '<tr><td colspan="4" class="empty">没有跳过的歌曲</td></tr>';
-  $("skip_pager").innerHTML = pagerHtml("skip", d.total, st.page, per);
-}
-async function unskipOne(file){
-  await api("/api/tasks/unskip", {method:"POST"}); msg("已恢复为待人工"); loadSkip(); loadStats();
-}
-async function unskipAll(){
-  if(!confirm("把全部跳过的歌曲恢复为待人工？")) return;
-  await api("/api/tasks/unskip", {method:"POST"}); msg("已全部恢复"); loadSkip(); loadStats();
-}
-
-// ---------------- 错误页面 ----------------
-async function loadError(){
-  const st = pageState.error, per = 100;
-  const d = await api(`/api/tasks?status=error&limit=${per}&offset=${st.page*per}`);
-  const tb = $("errorTable").querySelector("tbody");
-  tb.innerHTML = d.items.length ? d.items.map(t => `<tr>
-    <td data-label="文件"><b>${esc(t.name)}</b><div class="muted">${esc(t.path)}</div></td>
-    <td data-label="错误信息"><div class="err-detail">${esc(cnErr(t.error||"未知错误"))}</div></td>
-    <td data-label="操作"><button class="secondary" onclick="openDetail('${esc(t.path).replace(/'/g,"\\'")}')">编辑</button></td>
-  </tr>`).join("") : '<tr><td colspan="3" class="empty">没有错误记录</td></tr>';
-  $("error_pager").innerHTML = pagerHtml("error", d.total, st.page, per);
-}
-async function retryErrors(){
-  await api("/api/tasks/retry-errors", {method:"POST"}); msg("已把错误任务恢复为待处理"); loadError(); loadStats();
-}
-async function reprocessErrors(){
-  if(!confirm("对错误队列里的这几首歌重新刮削（只刮这几首，不涉及其它歌曲）？")) return;
-  const r = await api("/api/reprocess-errors", {method:"POST"});
-  if(r.requeued === 0){ msg("当前没有错误歌曲"); loadError(); return; }
-  msg(`已重刮 ${r.requeued} 首错误歌曲`);
-  loadError(); loadStats(); loadAutoWrite();
-}
-
-// ---------------- 删除任务（人工辅助/跳过队列） ----------------
-let delFile = "";
-async function confirmDelete(file, name, from){
+// ---------------- 删除 ----------------
+function confirmDelete(file, name){
   delFile = file;
   $("delTitle").textContent = "删除确认： " + name;
   $("delBody").innerHTML =
     `<b style="color:var(--err)">⚠ 此操作不可撤销！</b><br>` +
     `歌曲：<b>${esc(name)}</b><br>路径：<span class="muted">${esc(file)}</span><br><br>` +
     `请选择删除方式：<br>` +
-    `① <b>只删除任务</b> — 只把这首歌从${from}队列移除，音乐文件保留在磁盘上；<br>` +
+    `① <b>只删除任务</b> — 只把这首歌从队列移除，音乐文件保留在磁盘上；<br>` +
     `② <b>删除任务 + 文件本体</b> — 任务和磁盘上的音乐文件都会删除，无法找回。`;
   $("delModal").classList.add("open");
-  document.body.style.overflow = "hidden";   // 防止触摸穿透滚动
+  document.body.style.overflow = "hidden";
 }
-function closeDel(){ $("delModal").classList.remove("open"); delFile = "";
-  document.body.style.overflow = ""; }
+function closeDel(){
+  $("delModal").classList.remove("open");
+  delFile = ""; document.body.style.overflow = "";
+}
 async function doDeleteTask(deleteFile){
   const f = delFile;
   if(!f) return;
   closeDel();
   try{
-    const r = await api("/api/tasks/delete", {method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({file: f, delete_file: deleteFile})});
+    await jsonPost("/api/tasks/delete", {file:f, delete_file:deleteFile});
     msg(deleteFile ? "已删除任务和音乐文件本体" : "已删除任务（音乐文件已保留）");
-    loadPending(); loadSkip(); loadStats(); refreshCurrent();
+    await loadStats(); await loadQueue();
   }catch(e){ msg("删除失败：" + (e.message||e)); }
 }
 
-// ---------------- 歌曲详情弹窗（编辑 + 查看/预览 整合） ----------------
-const VIEW_FIELDS = [["title","标题"],["artist","歌手"],["album","专辑"],["album_artist","专辑艺人"],
-  ["year","年份"],["genre","流派"],["track","曲目号"],["disc","碟号"],["company","唱片公司"],
-  ["language","语言"],["cover","封面"],["lyrics","歌词"]];
-let editFile = "";                 // 当前文件路径
-let editCands = [];                // 当前文件候选列表
-let editSelSong = "";              // 选中的候选 songmid（用于"查看字段"）
-const editCandidates = {};         // 字段刮削候选缓存
+// ---------------- 手动刮削窗口 ----------------
+let sc = {file:"", data:null, lyrics:{value:"", source:"", song_id:"", title:"", artist:""}};
+let lrcLines = [], lrcEls = [];
 
-async function openDetail(file, songmid){
-  editFile = file; editCandidates.sources = null; editSelSong = songmid || "";
-  fcPromise = null;   // 每次打开新文件重置 field-candidates 缓存
-  const d = await api("/api/song-detail?file=" + encodeURIComponent(file));
-  $("dtTitle").textContent = "歌曲详情： " + d.name;
-  $("dtPath").textContent = d.file;
-  // 试听区：播放本地音频 + 显示文件内嵌歌词
-  const audio = $("dtAudio");
-  audio.src = BASE + "api/stream/" + encodeURIComponent(file);
-  const ext = (file.split(".").pop()||"").toLowerCase();
-  const lyrBox = $("dtLyrics");
-  vmLrcLines = []; vmLrcEls = []; vmLrcIdx = -1;
-  if(ext === "ape"){ lyrBox.textContent = "⚠ APE 格式浏览器不支持播放，仅 mp3/flac/ogg 可试听"; }
-  else if(d.lyrics){ renderDetailLrc(d.lyrics, "▌原·内嵌歌词"); }
-  else{ lyrBox.textContent = "（文件内无内嵌歌词）"; }
-  audio.ontimeupdate = function(){
-    if(!vmLrcLines.length) return;
-    let idx = 0;
-    for(let i=0;i<vmLrcLines.length;i++){ if(vmLrcLines[i].t <= this.currentTime) idx = i; else break; }
-    vmLrcEls.forEach((el,i)=> el.className = "lrc-line" + (i===idx ? " active" : ""));
-    const box = $("dtLyrics");
-    const el = vmLrcEls[idx];
-    if(box && el){
-      const lineH = el.offsetHeight || 20;
-      const boxH = box.clientHeight;
-      const top = el.offsetTop - box.offsetTop;
-      box.scrollTop = Math.max(0, top - (boxH - lineH) / 2);
-    }
-    vmLrcIdx = idx;
-  };
-  if(songmid){
-    // 点「查看/预览」：直接展开该候选的字段表（原内容 | 候选值输入框）
-    $("dtCands").innerHTML = "";
-    await renderCandidateDetail(songmid, d);
-  } else {
-    // 编辑入口：不显示任何候选，只显示文件已有内嵌数据（字段编辑模式）
-    editCands = d.candidates || [];
-    $("dtCands").innerHTML = "";
-    renderDetailFields(d);
-  }
-  $("detailModal").classList.add("open");
-  document.body.style.overflow = "hidden";   // 锁定底层滚动，防触摸穿透
-  audio.play().catch(()=>{});
-}
-function closeDetail(){
-  const a = $("dtAudio");
-  if(a){ a.pause(); a.removeAttribute("src"); a.load(); }
-  $("detailModal").classList.remove("open");
-  document.body.style.overflow = "";         // 恢复滚动
-  editCandidates.sources = null; editSelSong = "";
-  editCandsAll = {};                          // 清空候选缓存，防跨文件误用
-}
-function renderDetailLrc(lrc, label){
-  const box = $("dtLyrics");
-  vmLrcLines = parseLrc(lrc); vmLrcEls = []; vmLrcIdx = -1;
-  const lbl = $("dtLyrLabel");
-  if(lbl) lbl.textContent = label || "▌歌词";
-  if(!box) return;
-  if(vmLrcLines.length) box.innerHTML = vmLrcLines.map(l=>`<div class="lrc-line">${esc(l.text)}</div>`).join("");
-  else box.textContent = "（该歌词无时间轴）";
-  vmLrcEls = Array.from(box.children);
-}
-function renderDetailCands(){
-  const box = $("dtCands");
-  if(!editCands.length){ box.innerHTML = '<div class="muted">（该文件暂无候选，可用字段区的「刮削候选」或返回队列点「重新搜索」）</div>'; return; }
-  box.innerHTML =
-    `<div class="muted" style="margin-bottom:4px"><b style="color:#333">候选列表</b>（点「查看字段」对比，点「选用」直接写入）</div>` +
-    editCands.map(c => `<div class="cand" style="margin:4px 0;padding:6px 10px">
-      ${coverHtml(c.albummid)}
-      <div class="info"><b>${esc(c.title)}</b> - ${esc(c.artist)}<br>
-        <span class="muted">专辑 ${esc(c.album||"-")} ｜ 年份 ${esc(c.year||"-")} ｜ 时长 ${Math.floor((c.duration||0)/60)}:${String((c.duration||0)%60).padStart(2,"0")}</span>
-        ${c.verified?'<span class="tag" style="background:#e6f7ee;color:var(--ok)" title="结果的歌名与歌手都出现在文件名中">反推✓</span>':''}
-        <span class="tag" style="background:#e7f3ff;color:var(--accent)">${esc(c.source||"")}</span></div>
-      <span class="score">${(c.score/100).toFixed(2)}</span>
-      <button class="secondary" onclick="viewCandidateFields('${esc(c.songmid).replace(/'/g,"\\'")}')">查看字段</button>
-      <button class="ok" onclick="decide('${esc(editFile).replace(/'/g,"\\'")}','${esc(c.songmid).replace(/'/g,"\\'")}')">选用</button>
-    </div>`).join("");
-}
-// 候选列表里点「查看字段」：切换到该候选的字段表
-async function viewCandidateFields(songmid){
-  editSelSong = songmid;
+async function openScrub(file){
+  sc = {file, data:null, lyrics:{value:"", source:"", song_id:"", title:"", artist:""}};
+  $("scName").textContent = "手动刮削： " + file.split("/").pop();
+  $("scMeta").textContent = "正在按生效数据源刮削…";
+  $("scFields").innerHTML = `<div class="empty">刮削中，请稍候…</div>`;
+  $("scLrcCur").value = ""; $("scLrcCand").value = ""; $("scLrcCand").oninput = syncLyricsWrite;
+  $("scLrcWrite").disabled = true;
+  $("scLrc").textContent = "（加载中…）";
+  $("scrubModal").classList.add("open");
+  document.body.style.overflow = "hidden";
   try{
-    const d = await api("/api/song-detail?file=" + encodeURIComponent(editFile));
-    await renderCandidateDetail(songmid, d);
-  }catch(e){ msg("加载失败：" + (e.message||e)); }
-}
-// 直接展开某个候选的完整字段表：
-// 每行 = 勾选框 + 字段名 + [原内容] + [候选值输入框(默认=候选值, 可编辑保存)]
-let fcPromise = null;   // field-candidates 前端缓存 Promise（同一次打开只请求一次）
-let lrcRequested = {};  // 防止歌词重复请求
-async function renderCandidateDetail(songmid, d){
-  editSelSong = songmid;
-  let full = null;
-  // 延迟优化：先用 song-detail 已有候选基础字段渲染（零等待），
-  // field-candidates 后台加载后自动补全完整字段（genre/company/cover 等）
-  const baseCand = (d.candidates||[]).find(x => x.songmid === songmid);
-  full = baseCand ? {
-    title: baseCand.title, artist: baseCand.artist, album: baseCand.album,
-    date: baseCand.year, cover_url: "", lyrics: "", genre: "", publisher: "",
-    language: "", album_artist: "", track: "", disc: "",
-    song_id: songmid, album_id: baseCand.albummid, duration: baseCand.duration,
-    source: baseCand.source,
-  } : null;
-  // 立即渲染主体（不等待任何网络），弹窗可马上打开
-  renderCandidateDetailHtml(songmid, d, full);
-  // 后台等完整字段，到了就补全刷新（不阻塞弹窗）
-  if(!fcPromise){
-    fcPromise = api("/api/field-candidates?file=" + encodeURIComponent(editFile))
-      .then(r => r.sources || {})
-      .catch(() => ({}));
-  }
-  fcPromise.then(sources => {
-    for(const src of Object.keys(sources||{})){
-      const m = (sources[src]||[]).find(x => x.song_id === songmid);
-      if(m){ full = m; break; }
-    }
-    renderCandidateDetailHtml(songmid, d, full, true);
-  });
-}
-function renderCandidateDetailHtml(songmid, d, full, completed){
-  if(!full){
-    const c = (d.candidates||[]).find(x => x.songmid === songmid);
-    if(!c){ $("dtFields").innerHTML = '<div class="muted">候选数据缺失，请刷新队列后重试</div>'; return; }
-    full = {title:c.title, artist:c.artist, album:c.album, date:c.year, cover_url:"",
-            lyrics:"", genre:"", publisher:"", language:"", album_artist:"",
-            track:"", disc:"", song_id:songmid, album_id:c.albummid, duration:c.duration};
-  }
-  if(full && full.lyrics) renderDetailLrc(full.lyrics, "▌候选歌词");
-  const tags = (d.tags) || {};
-  // 候选字段名 -> 文件标签键（显示"原内容"用）
-  const candKey = {title:"title", artist:"artist", album:"album", album_artist:"album_artist",
-    year:"date", genre:"genre", track:"track", disc:"disc", company:"publisher",
-    language:"language"};
-  // 试听区候选信息：候选时长 vs 文件时长，方便人工对比
-  const fmtDur = (s) => { s = parseInt(s||0,10); return s ? `${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}` : "-"; };
-  const fileDur = d.duration || 0;
-  const candDur = full.duration || (d.candidates||[]).find(x=>x.songmid===songmid)?.duration || 0;
-  let durInfo = `<b style="color:#333">候选信息：</b>${esc(full.title||"")} - ${esc(full.artist||"")} ｜ 候选时长 ${fmtDur(candDur)} ｜ 文件时长 ${fmtDur(fileDur)}`;
-  if(candDur && fileDur){
-    const diff = Math.abs(candDur - fileDur);
-    durInfo += ` ｜ <b style="color:${diff<=30?"var(--ok)":"var(--warn)"}">相差 ${diff} 秒</b>`;
-  }
-  $("dtCandInfo").innerHTML = durInfo;
-  // 候选封面 URL：优先 full.cover_url；没有或加载失败则用 albummid 拼 QQ 封面兜底
-  const candAlbumMid = full.album_id || (d.candidates||[]).find(x=>x.songmid===songmid)?.albummid || "";
-  const candCoverUrl = full.cover_url || coverUrl(candAlbumMid);
-  let html = `<div style="border:1px solid #cfe3ff;border-radius:8px;padding:8px 10px;margin:6px 0;background:#f4f9ff">
-    <div class="muted" style="margin-bottom:4px"><b style="color:var(--accent)">候选「${esc(full.title||"")} - ${esc(full.artist||"")}」的字段</b><br>
-    每行：<b>原内容</b> = 文件当前标签；<b>候选值</b> = 该候选携带的内容（可修改后点「保存」，或勾选后点下方「选用」一并写入）</div>`;
-  for(const [k, label] of VIEW_FIELDS){
-    const candVal = (k === "cover") ? candCoverUrl : String(full[k]||"");
-    const origVal = (k === "cover") ? (d.cover_base64||"")
-      : (k === "lyrics") ? (d.lyrics||"")
-      : String((tags[candKey[k]]||""));
-    // 原内容显示：封面/歌词显示图片或文本；其它字段最多 40 字
-    let origHtml;
-    if(k === "cover"){
-      origHtml = origVal ? `<img src="${esc(origVal)}" style="width:40px;height:40px;border-radius:3px;object-fit:cover">` : '<span class="muted">无</span>';
-    } else if(k === "lyrics"){
-      origHtml = origVal ? `<span title="${esc(origVal)}">${esc(String(origVal).slice(0,80))}${origVal.length>80?"…":""}</span>` : '<span class="muted">无</span>';
-    } else {
-      origHtml = origVal ? esc(String(origVal).slice(0,40)) : '<span class="muted">无</span>';
-    }
-    if(k === "lyrics"){
-      // 歌词：原内嵌歌词 与 候选歌词 两个文本框，明显区分
-      html += `<div class="field-row" style="border-bottom:1px dashed #eef;padding:6px 0">
-        <label style="color:#333;min-width:74px;flex-shrink:0;font-size:13px;display:inline-flex;align-items:center;gap:4px"><input type="checkbox" id="vf_${songmid}_${k}" checked> ${label}</label>
-        <div style="flex:1;min-width:0;display:flex;gap:10px;flex-wrap:wrap">
-          <div style="flex:1;min-width:160px">
-            <div class="muted" style="margin-bottom:2px"><b style="color:#8a6d3b">▌原·内嵌歌词</b>（文件里已有的）</div>
-            <textarea id="or_${songmid}_${k}" style="width:100%;min-height:80px;font-size:12px;background:#fdf8ec;border:1px solid #e8d5a0" placeholder="（文件无内嵌歌词）">${esc(d.lyrics||"")}</textarea>
-          </div>
-          <div style="flex:1;min-width:160px">
-            <div class="muted" style="margin-bottom:2px"><b style="color:var(--accent)">▌候选歌词</b>（该候选提供的，可编辑）</div>
-            <textarea id="cf_${songmid}_${k}" style="width:100%;min-height:80px;font-size:12px" placeholder="正在加载候选歌词…"></textarea>
-          </div>
-        </div>
-        <button class="secondary" style="font-size:11px;padding:4px 8px" onclick="saveCandidateField('${esc(songmid).replace(/'/g,"\\'")}','${k}')">保存候选歌词</button>
-      </div>`;
-      continue;
-    }
-    // 字段行：checkbox+字段名 与 原值 分开两个弹性块，避免重叠
-    html += `<div class="field-row" style="border-bottom:1px dashed #eef;padding:6px 0;display:flex;align-items:center;flex-wrap:wrap;gap:6px 8px">
-      <label style="color:#333;flex:0 0 auto;font-size:13px;display:inline-flex;align-items:center;gap:4px"><input type="checkbox" id="vf_${songmid}_${k}" checked> ${label}</label>
-      <span style="flex:1 1 120px;min-width:90px;font-size:12px;color:#666;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:default" title="${esc(k==="cover"?"":String(origVal).slice(0,300))}"><span class="muted">原:</span> ${origHtml}</span>
-      <span style="flex:2 1 140px;min-width:110px;display:flex;align-items:center;gap:6px">${k==="cover"
-        ? (candVal ? `<img src="${esc(candVal)}" style="width:44px;height:44px;border-radius:4px;object-fit:cover;flex-shrink:0" onerror="this.style.display='none'">` : '<span class="muted">无</span>')
-        : `<input type="text" id="cf_${songmid}_${k}" value="${esc(candVal)}" style="flex:1;min-width:0;width:auto;font-size:13px" placeholder="候选无此字段">`}
-        ${k!=="cover" ? `<button class="secondary" style="font-size:11px;padding:4px 8px;flex-shrink:0" onclick="saveCandidateField('${esc(songmid).replace(/'/g,"\\'")}','${k}')">保存</button>` : ""}
-      </span>
-    </div>`;
-  }
-  html += `<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
-      <button class="ok" onclick="decide('${esc(editFile).replace(/'/g,"\\'")}','${esc(songmid).replace(/'/g,"\\'")}',false,getViewFields('${esc(songmid).replace(/'/g,"\\'")}'))">选用（写入勾选字段）</button>
-      <button class="warn" onclick="markDone('${esc(editFile).replace(/'/g,"\\'")}')">💾 直接记忆到已人工（不选用）</button>
-      <button class="secondary" onclick="editSelSong='';renderDetailFieldsFromCurrent()">切换为编辑模式</button>
-    </div></div>`;
-  $("dtFields").innerHTML = html;
-  // 候选歌词：每次渲染都尝试填充编辑框（避免二次刷新覆盖后残留"正在加载"）；
-  // 有缓存直接用，无缓存才发一次请求（lrcRequested 防重复）
-  if(VIEW_FIELDS.some(f=>f[0]==="lyrics")){
-    const ta = $("cf_" + songmid + "_lyrics");
-    if(ta){
-      const cached = lyricsCache[songmid];
-      if(cached !== undefined){
-        ta.value = cached||""; ta.placeholder = cached ? "" : "候选无歌词，可手动输入";
-        if(cached) renderDetailLrc(cached, "▌候选歌词");
-      } else if(!lrcRequested[songmid]){
-        lrcRequested[songmid] = true;
-        api("/api/lyrics/" + songmid + "?" + new URLSearchParams(
-            {source: full.source||"", title: full.title||"", artist: full.artist||""}))
-          .then(dd => {
-            const l = dd.lyrics||""; lyricsCache[songmid] = l;
-            const t2 = $("cf_" + songmid + "_lyrics");
-            if(t2){ t2.value = l; t2.placeholder = l ? "" : "候选无歌词，可手动输入"; }
-            if(l) renderDetailLrc(l, "▌候选歌词");
-          })
-          .catch(() => { const t3 = $("cf_" + songmid + "_lyrics"); if(t3) t3.placeholder = "歌词加载失败，可手动输入"; });
-      }
-    }
+    sc.data = await jsonPost("/api/scrub/" + encodeURIComponent(file), {});
+    renderScrub();
+  }catch(e){
+    $("scFields").innerHTML = `<div class="err-detail">刮削失败：${esc(cnErr(e.message||e))}</div>`;
+    $("scMeta").textContent = "";
   }
 }
-// 直接记忆到已人工：不选用、不写入，标记 manual_done + 永久记忆
-async function markDone(file){
-  if(!confirm("直接记忆到已人工？\n\n不会写入任何候选字段（文件内嵌元数据保持不变），只把这首歌标记为已人工处理并加入永久记忆，之后刮削自动跳过。\n\n适合：文件内嵌的元数据已经很好，不需要选用候选。")) return;
-  try{
-    await api("/api/mark-done", {method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({file})});
-    msg("已记忆到已人工（未写入任何字段）");
-    closeDetail();
-    loadPending(); loadStats(); refreshCurrent();
-  }catch(e){ msg("操作失败：" + (e.message||e)); }
-}
-// 保存候选字段表中的某个字段（输入框内容 → 写入文件）
-async function saveCandidateField(songmid, field){
-  const input = $("cf_" + songmid + "_" + field);
-  if(!input) return;
-  const value = input.value.trim();
-  if(!value && field !== "lyrics"){ msg("值为空，未保存"); return; }
-  try{
-    await api("/api/field-write", {method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({file: editFile, field, value})});
-    msg("已保存「" + (VIEW_FIELDS.find(f=>f[0]===field)||[])[1] + "」");
-  }catch(e){ msg("保存失败：" + (e.message||e)); }
-}
-function getViewFields(songmid){
-  return VIEW_FIELDS.filter(([k]) => { const el = $("vf_" + songmid + "_" + k); return el ? el.checked : false; }).map(([k]) => k);
-}
-function renderDetailFieldsFromCurrent(){
-  const panel = $("candfieldpanel");
-  if(panel) panel.remove();
-  editSelSong = "";
-  // 重新读取当前文件标签刷新字段区（回到编辑模式）
-  api("/api/song-detail?file=" + encodeURIComponent(editFile)).then(d => {
-    editCands = d.candidates || [];
-    renderDetailCands();
-    renderDetailFields(d);
-  }).catch(()=>{});
-}
-function renderDetailFields(d){
-  const tags = d.tags || {};
-  let html = '<div class="muted" style="margin:8px 0 4px"><b style="color:#333">字段编辑</b>（手输保存，或「刮削候选」从候选里取该字段）</div>';
-  for(const [key, label, ckey] of EDIT_FIELDS){
-    let cur = "";
-    if(key === "cover"){
-      cur = d.cover_base64
-        ? `<img src="${d.cover_base64}" style="width:56px;height:56px;border-radius:4px;object-fit:cover">`
-        : '<span class="muted">（无封面）</span>';
-      html += `<div class="field-row" id="frow-${key}">
-        <span class="fname">${label}</span>
-        <span class="fval">${cur}</span>
-        <input type="file" id="covfile-${key}" accept="image/png,image/jpeg,image/webp" style="width:150px;font-size:12px">
-        <button class="secondary" onclick="uploadCover()">上传图片</button>
-        <button class="secondary" onclick="scrapeField('${key}')">刮削候选</button>
-        <span id="candbox-${key}" style="width:100%"></span>
-      </div>`;
-      continue;
-    }
-    if(key === "lyrics"){
-      cur = (d.lyrics || "").slice(0, 80) + (d.lyrics && d.lyrics.length > 80 ? "…" : "");
-      html += `<div class="field-row" id="frow-${key}">
-        <span class="fname">${label}</span>
-        <span class="fval">${esc(cur) || '<span class="muted">（空）</span>'}</span>
-        <button class="secondary" onclick="scrapeField('${key}')">刮削候选</button>
-        <span id="candbox-${key}" style="width:100%"></span>
-        <textarea id="input-${key}" placeholder="手动输入歌词（LRC 或纯文本）…">${esc(d.lyrics||"")}</textarea>
-        <button class="ok" onclick="saveField('${key}')">保存</button>
-      </div>`;
-      continue;
-    }
-    const v = tags[ckey === "date" ? "date" : (ckey === "track_total" ? "track_total" : ckey)] || "";
-    const val = key === "year" ? (tags.date || "") : v;
-    html += `<div class="field-row" id="frow-${key}">
-      <span class="fname">${label}</span>
-      <span class="fval">${esc(val) || '<span class="muted">（空）</span>'}</span>
-      <button class="secondary" onclick="scrapeField('${key}')">刮削候选</button>
-      <input type="text" id="input-${key}" value="${esc(val)}" style="width:200px">
-      <button class="ok" onclick="saveField('${key}')">保存</button>
-      <span id="candbox-${key}" style="width:100%"></span>
-    </div>`;
-  }
-  $("dtFields").innerHTML = html;
+function closeScrub(){
+  const a = $("scAudio");
+  try{ a.pause(); }catch(e){}
+  a.removeAttribute("src");
+  $("scrubModal").classList.remove("open");
+  document.body.style.overflow = "";
+  closeAllPops();
+  loadStats().catch(()=>{});
+  loadQueue().catch(()=>{});
 }
 
-// 字段候选缓存：field -> [完整候选对象]（按钮只传 song_id，值点按时从这取，
-// 避免把歌词等长文本内联进 onclick 导致引号/换行截断脚本）
-let editCandsAll = {};
-async function scrapeField(field){
-  const box = $("candbox-" + field);
-  box.innerHTML = '<div class="muted">正在搜索候选（每个勾选源前 10 条）…</div>';
-  try{
-    if(!editCandidates.sources){
-      editCandidates.sources = (await api("/api/field-candidates?file=" + encodeURIComponent(editFile))).sources || {};
-    }
-    const srcs = editCandidates.sources;
-    const keys = Object.keys(srcs);
-    if(!keys.length){ box.innerHTML = '<div class="muted">没有可用的数据源候选（请先在配置页勾选源，并确保文件名是「歌曲名-歌手」格式）</div>'; return; }
-    // 拍平所有源候选，供 applyCandidate 按 song_id 取值
-    const all = [];
-    for(const src of keys) all.push(...(srcs[src]||[]));
-    editCandsAll[field] = all;
-    let html = '<div class="candlist">';
-    for(const src of keys){
-      html += `<div class="src-title">${esc(src)}（${srcs[src].length} 条）</div>`;
-      for(const m of srcs[src]){
-        const fieldVal = m[field === "year" ? "date" : field] || "";
-        const cover = field === "cover" ? (m.cover_url ? `<img src="${esc(m.cover_url)}" onerror="this.style.display='none'">` : "") : "";
-        const score = m.confidence != null ? (m.confidence/100).toFixed(2) : "";
-        const sid = esc(String(m.song_id||"")).replace(/'/g,"\\'");
-        html += `<div class="canditem">
-          ${cover}
-          <span><b>${esc(m.title)}</b> - ${esc(m.artist)}</span>
-          <span class="muted">专辑:${esc(m.album||"-")} 年份:${esc(m.date||"-")} 得分:${score}</span>
-          <span class="tag" style="background:#e7f3ff;color:var(--accent)">${fieldVal ? esc(String(fieldVal).slice(0,30)) : "（无此字段）"}</span>
-          <button class="ok" onclick="applyCandidate('${field}','${sid}')">用于此字段</button>
-        </div>`;
-      }
-    }
-    html += '</div>';
-    box.innerHTML = html;
-  }catch(e){ box.innerHTML = `<div class="muted">搜索失败：${esc(e.message||e)}</div>`; }
+function renderScrub(){
+  const d = sc.data;
+  const maxCands = d.fields.reduce((a,f)=> Math.max(a, f.candidates.length), 0);
+  $("scMeta").textContent =
+    `候选 ${maxCands} 条/字段｜通过校验 ${d.verified} 条｜` +
+    `候选词：${(d.queries||[]).join(" / ") || "—"}`;
+  // 播放器 + 内嵌歌词同步
+  const a = $("scAudio");
+  a.src = BASE + "api/stream/" + encodeURIComponent(sc.file);
+  const embedded = d.lyrics.current || "";
+  $("scLrcCur").value = embedded;
+  renderLrcPlayer(embedded);
+  // 字段行（歌词由下方对比框负责）
+  $("scFields").innerHTML = d.fields.map(fieldRowHtml).join("") ||
+    `<div class="empty">当前没有生效字段，请到设置里勾选</div>`;
+  $("scLyricsBox").style.display = d.lyrics.active ? "flex" : "none";
 }
 
-async function applyCandidate(field, songid){
-  // 从候选缓存里按 song_id 取完整对象，避免歌词等长文本进 onclick 被截断
-  const cand = (editCandsAll[field]||[]).find(x => String(x.song_id||"") === songid);
-  if(!cand){ msg("候选数据丢失，请重新刮削候选"); return; }
-  let value = cand[field === "year" ? "date" : field] || "";
-  if(field === "cover") value = cand.cover_url || "";
-  if(field === "lyrics" && !value){ msg("该候选无歌词"); return; }
-  if(!value){ msg("该候选此字段为空，无法应用"); return; }
+function fieldRowHtml(f){
+  const isCover = f.special === "cover";
+  const curHtml = isCover
+    ? (f.current ? `<span class="sr-cur">已内嵌封面</span>` : `<span class="sr-cur empty">（无封面）</span>`)
+    : (f.current ? `<span class="sr-cur">${esc(f.current)}</span>` : `<span class="sr-cur empty">（空）</span>`);
+  const inputHtml = isCover
+    ? `<input class="sr-in" id="in_${f.key}" placeholder="候选封面 URL（点右侧「手动刮削」选择）" oninput="syncWrite('${f.key}')">`
+    : `<input class="sr-in" id="in_${f.key}" placeholder="候选值（点右侧「手动刮削」选择）" oninput="syncWrite('${f.key}')">`;
+  return `<div class="scrub-row">
+    <div class="sr-name">${esc(f.label)}</div>
+    <div class="sr-cell"><span class="sr-tag">原有</span>${curHtml}</div>
+    <div class="sr-cell"><span class="sr-tag">候选</span>${inputHtml}</div>
+    <div class="sr-btns">
+      <button class="secondary" onclick="toggleCandMenu(event, '${f.key}')">手动刮削 ▾</button>
+      <button class="ok" id="wr_${f.key}" onclick="writeField('${f.key}')" disabled>写入</button>
+    </div>
+  </div>`;
+}
+function syncWrite(key){
+  const v = ($("in_" + key).value || "").trim();
+  $("wr_" + key).disabled = !v;
+}
+function syncLyricsWrite(){
+  $("scLrcWrite").disabled = !($("scLrcCand").value || "").trim();
+}
+
+// 候选值下拉：只列该字段的候选值（不展示整条结果）
+function toggleCandMenu(ev, key){
+  ev.stopPropagation();
+  const f = (sc.data.fields || []).find(x => x.key === key);
+  const toggleOff = $("candMenu").classList.contains("open") && sc.menuKey === key;
+  closeAllPops();
+  if(toggleOff || !f) return;
+  sc.menuKey = key;
+  const isCover = f.special === "cover";
+  $("candMenu").innerHTML = f.candidates.length
+    ? f.candidates.map((c, i) =>
+        `<div class="cm-item" onclick="pickCand('${key}', ${i})">
+           ${isCover ? `<img src="${esc(c.value)}" style="width:100%;max-width:220px;border-radius:5px"
+                 onerror="this.style.display='none'">` : ""}
+           <span class="cm-val">${esc(c.value)}</span>
+           <span class="cm-src">${esc(c.source)}${c.title ? " · " + esc(c.title) : ""}${c.artist ? " - " + esc(c.artist) : ""}</span>
+         </div>`).join("")
+    : `<div class="cm-empty">该字段没有候选值（换个数据源或改文件名后重试）</div>`;
+  placePop($("candMenu"), ev.currentTarget);
+}
+function pickCand(key, idx){
+  const f = (sc.data.fields || []).find(x => x.key === key);
+  if(!f || !f.candidates[idx]) return;
+  const c = f.candidates[idx];
+  const input = $("in_" + key);
+  input.value = c.value;
+  closeAllPops();
+  syncWrite(key);
+}
+
+async function writeField(key){
+  const value = ($("in_" + key).value || "").trim();
+  if(!value) return;
   try{
-    await api("/api/field-write", {method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({file: editFile, field, value})});
-    msg("已写入「" + FIELD_LABELS[field] + "」");
-    refreshCurrent(); openDetail(editFile);
+    await jsonPost("/api/field-write", {file:sc.file, field:key, value});
+    msg(`已写入${fieldLabel(key)}`);
+    // 写入后刷新「原有」列
+    try{
+      const d = await jsonPost("/api/scrub/" + encodeURI(sc.file), {});
+      sc.data = d; renderScrub();
+    }catch(e){}
   }catch(e){ msg("写入失败：" + (e.message||e)); }
 }
 
-async function saveField(field){
-  let value = $("input-" + field).value;
-  if(field === "cover") { msg("封面请用上传或候选"); return; }
-  if(!value.trim() && field !== "lyrics"){ msg("值不能为空"); return; }
-  try{
-    await api("/api/field-write", {method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({file: editFile, field, value})});
-    msg("已保存「" + FIELD_LABELS[field] + "」");
-    refreshCurrent(); openDetail(editFile);
-  }catch(e){ msg("保存失败：" + (e.message||e)); }
-}
-
-async function uploadCover(){
-  const input = document.querySelector('#frow-cover input[type=file]');
-  if(!input.files || !input.files[0]){ msg("请先选择图片文件"); return; }
-  const fd = new FormData();
-  fd.append("file", editFile);
-  fd.append("image", input.files[0]);
-  try{
-    const r = await fetch(BASE + "api/cover-upload", {method:"POST", body: fd});
-    const text = await r.text().catch(()=> "");
-    if(!r.ok){
-      let detail = text;
-      try { const j = JSON.parse(text); if(j && j.detail) detail = j.detail; } catch(e){}
-      throw new Error(detail || ("HTTP " + r.status));
-    }
-    msg("封面已上传写入"); refreshCurrent(); openDetail(editFile);
-  }catch(e){ msg("封面上传失败：" + (e.message||e)); }
-}
-
-function refreshCurrent(){
-  const active = document.querySelector(".page.active");
-  if(active) ({total:loadTotal, autowrite:loadAutoWrite, pending:loadPending,
-    manualdone:loadManualDone, skip:loadSkip, error:loadError, config:()=>{}})[active.id.replace("page-","")]();
-}
-
-// ---------------- 歌词解析（查看候选弹窗用） ----------------
-let vmLrcLines = [], vmLrcEls = [], vmLrcIdx = -1;   // 查看弹窗专用歌词同步状态
+// ---------------- 歌词：同步播放 + 候选歌词 ----------------
 function parseLrc(lrc){
-  const lines = [];
-  for(const line of String(lrc||"").split("\n")){
-    const times = [];
-    const re = /\[(\d+):(\d+(?:\.\d+)?)\]/g;
-    let m;
-    while((m = re.exec(line))) times.push(parseFloat(m[1])*60 + parseFloat(m[2]));
-    const text = line.replace(/\[\d+:\d+(?:\.\d+)?\]/g,"").trim();
-    if(times.length && text) for(const t of times) lines.push({t, text});
-  }
-  lines.sort((a,b)=>a.t-b.t);
-  return lines;
-}
-
-async function showLyrics(songmid, btn, cand){
-  try{
-    let lrc = lyricsCache[songmid];
-    if(!lrc){
-      const d = await api("/api/lyrics/" + songmid + "?" + new URLSearchParams(
-        {source: (cand&&cand.source)||"", title: (cand&&cand.title)||"", artist: (cand&&cand.artist)||""}));
-      lrc = d.lyrics; lyricsCache[songmid] = lrc;
+  const out = [];
+  const re = /\[(\d{1,2}):(\d{1,2})(?:[.:](\d{1,3}))?\]/g;
+  for(const raw of String(lrc||"").split("\n")){
+    const text = raw.replace(/\[[^\]]*\]/g, "").trim();
+    let m, found = false;
+    re.lastIndex = 0;
+    while((m = re.exec(raw))){
+      found = true;
+      const ms = m[3] ? parseInt((m[3] + "00").slice(0,3)) : 0;
+      out.push({t: parseInt(m[1])*60 + parseInt(m[2]) + ms/1000, text});
     }
-    lyricsOpen.add(songmid);
-    const box = document.createElement("div");
-    box.style.cssText = "margin-top:6px;max-height:180px;overflow:auto;background:#f8f9fa;padding:8px;border-radius:4px;font-size:12px;white-space:pre-wrap;width:100%";
-    box.textContent = lrc;
-    btn.closest(".cand").appendChild(box);
-    btn.disabled = true; btn.textContent = "歌词已显示";
-  }catch(e){ msg("歌词获取失败：" + (e.message || e)); }
+    if(!found && text && /^\s*$/.test(raw) === false) continue;
+  }
+  return out.filter(x => x.text).sort((a,b)=>a.t-b.t);
+}
+function renderLrcPlayer(embedded){
+  const box = $("scLrc");
+  const lines = parseLrc(embedded);
+  lrcLines = []; lrcEls = [];
+  if(!lines.length){
+    box.innerHTML = embedded
+      ? `<div class="muted">（文件内歌词无时间轴，无法同步；全文见下方「原有内嵌歌词」）</div>`
+      : `<div class="muted">（该文件没有内嵌歌词）</div>`;
+    return;
+  }
+  lrcLines = lines;
+  box.innerHTML = lines.map((l, i) =>
+    `<div class="lrc-line" data-i="${i}">${esc(l.text)}</div>`).join("");
+  lrcEls = Array.from(box.querySelectorAll(".lrc-line"));
+  lrcEls.forEach((el, i) => el.onclick = () => {
+    const a = $("scAudio");
+    try{ a.currentTime = lrcLines[i].t; a.play(); }catch(e){}
+  });
+  const a = $("scAudio");
+  a.ontimeupdate = () => {
+    if(!lrcLines.length) return;
+    let idx = 0;
+    for(let i=0;i<lrcLines.length;i++){ if(lrcLines[i].t <= a.currentTime) idx = i; else break; }
+    lrcEls.forEach((el,i)=> el.className = "lrc-line" + (i===idx ? " active" : ""));
+    const el = lrcEls[idx];
+    if(el && box.scrollHeight > box.clientHeight){
+      const want = el.offsetTop - box.clientHeight/2 + el.offsetHeight/2;
+      box.scrollTop = Math.max(0, want);
+    }
+  };
+  $("scLrcHint").textContent = `内嵌歌词共 ${lines.length} 行（点击任意行可跳转播放）`;
 }
 
-// ---------------- 操作按钮 ----------------
-async function scan(){
-  const r = await api("/api/scan", {method:"POST", headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({path: $("music_dir").value, recursive: $("recursive").checked})});
-  msg(`扫描完成：共 ${r.total} 个文件，新增 ${r.added} 个待处理`);
-  loadStats(); loadTotal();
+function toggleLyricsMenu(ev){
+  ev.stopPropagation();
+  const cs = (sc.data && sc.data.lyrics.candidates) || [];
+  const toggleOff = $("candMenu").classList.contains("open") && sc.menuKey === "lyrics";
+  closeAllPops();
+  if(toggleOff) return;
+  sc.menuKey = "lyrics";
+  $("candMenu").innerHTML = cs.length
+    ? cs.map((c, i) =>
+        `<div class="cm-item" onclick="pickLyrics(${i})">
+           <span class="cm-val">${esc(c.title || "（无歌名）")}${c.artist ? " - " + esc(c.artist) : ""}</span>
+           <span class="cm-src">${esc(c.source)}（点选后取该候选歌词）</span>
+         </div>`).join("")
+    : `<div class="cm-empty">没有可选候选（先确认数据源已勾选）</div>`;
+  placePop($("candMenu"), ev.currentTarget);
 }
-async function run(){ await api("/api/run", {method:"POST"}); msg("刮削已启动"); poll(); }
-async function stop(){ await api("/api/stop", {method:"POST"}); msg("已暂停"); }
-async function resetTasks(){
-  if(!confirm("清空所有任务与决策记录？")) return;
-  await api("/api/tasks/reset", {method:"POST"}); loadStats(); refreshCurrent();
-}
-async function refresh(file){
+async function pickLyrics(idx){
+  const c = ((sc.data && sc.data.lyrics.candidates) || [])[idx];
+  if(!c) return;
+  closeAllPops();
+  $("scLrcCand").value = "（正在获取歌词…）";
   try{
-    const r = await api("/api/refresh/" + encodeURIComponent(file));
-    if(r.write_error){ msg("找到高分候选但写入失败：" + r.write_error); }
-    else if(r.auto_written){ msg("✅ 已自动写入（重新搜索命中高分候选，直接完成写入）"); }
-    else{ msg("已重新搜索（未达阈值，仍留在人工队列）"); }
-  }catch(e){ msg("重新搜索失败：" + (e.message||e)); }
-  loadPending(); loadStats(); refreshCurrent();
+    const q = new URLSearchParams({song_id:c.song_id||"", source:c.source||"",
+                                  title:c.title||"", artist:c.artist||""});
+    const d = await api("/api/cand-lyrics?" + q.toString());
+    sc.lyrics = {value:d.lyrics || "", source:c.source, song_id:c.song_id,
+                 title:c.title, artist:c.artist};
+    $("scLrcCand").value = d.lyrics || "";
+  }catch(e){
+    sc.lyrics = {value:"", source:"", song_id:"", title:"", artist:""};
+    $("scLrcCand").value = "";
+    msg("获取歌词失败：" + (e.message||e));
+  }
+  syncLyricsWrite();
 }
-async function recognize(file){
-  msg("指纹识别中（约需 10-30 秒）...");
-  try{ await api("/api/recognize/" + encodeURIComponent(file)); msg("指纹识别完成，已加载候选"); }
-  catch(e){ msg("指纹识别失败：" + (e.message || e)); }
-  loadPending();
+async function writeLyrics(){
+  const value = $("scLrcCand").value || "";
+  if(!value.trim()) return;
+  try{
+    await jsonPost("/api/field-write", {file:sc.file, field:"lyrics", value});
+    msg("已写入歌词");
+    $("scLrcCur").value = value;
+    renderLrcPlayer(value);
+  }catch(e){ msg("写入失败：" + (e.message||e)); }
+}
+
+// ---------------- 顶栏操作 / 批量操作 ----------------
+async function scan(){
+  try{
+    const cfg = await api("/api/config");
+    if(!cfg.music_dir){ msg("请先到设置里填写音乐目录"); showPage("config"); return; }
+    const r = await jsonPost("/api/scan", {});
+    msg(`已扫描：新增 ${r.added || 0} 个文件`); await loadStats(); await loadQueue();
+  }catch(e){ msg("扫描失败：" + (e.message||e)); }
+}
+async function run(){ await jsonPost("/api/run", {}); msg("刮削已启动"); poll(); }
+async function stop(){ await jsonPost("/api/stop", {}); msg("已暂停"); }
+async function resetTasks(){
+  if(!confirm("清空任务列表（只清任务，不改音乐文件）？")) return;
+  await jsonPost("/api/tasks/reset", {});
+  msg("任务已清空"); await loadStats(); await loadQueue();
+}
+async function scrapePending(){
+  try{
+    const r = await jsonPost("/api/scrape-pending", {});
+    msg(r.count ? `已开始刮削 ${r.count} 首` : "没有待刮削的文件"); poll();
+  }catch(e){ msg("操作失败：" + (e.message||e)); }
+}
+async function reprocessPending(){
+  try{
+    const r = await jsonPost("/api/reprocess-pending", {});
+    msg(`已重新排队 ${r.requeued} 首`); poll();
+  }catch(e){ msg("操作失败：" + (e.message||e)); }
 }
 async function batchBest(){
-  if(!confirm("对队列中每个有候选的文件自动选用最高分候选？（无候选的留在队列）")) return;
+  if(!confirm("把「待人工关」队列里每首歌的最高分候选直接写入？")) return;
   try{
-    const r = await api("/api/decide/batch", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({mode:"best"})});
-    msg(`批量完成：${r.chosen} 个已选用最高分候选`); loadPending(); loadStats(); refreshCurrent();
+    const r = await jsonPost("/api/decide/batch", {mode:"best"});
+    msg(`批量完成：${r.chosen} 首已写入`); await loadStats(); await loadQueue();
   }catch(e){ msg("批量操作失败：" + (e.message||e)); }
 }
 async function batchSkip(){
-  if(!confirm("跳过队列中所有文件（不再处理）？")) return;
+  if(!confirm("跳过「待人工关」队列里的所有文件？")) return;
   try{
-    const r = await api("/api/decide/batch", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({mode:"skip"})});
-    msg(`已跳过 ${r.skipped} 个`); loadPending(); loadStats(); refreshCurrent();
+    const r = await jsonPost("/api/decide/batch", {mode:"skip"});
+    msg(`已跳过 ${r.skipped} 首`); await loadStats(); await loadQueue();
   }catch(e){ msg("批量操作失败：" + (e.message||e)); }
 }
-
-// ---------------- 配置页 ----------------
-async function loadConfig(){
-  const c = await api("/api/config");
-  $("threshold").value = c.threshold; $("thVal").textContent = c.threshold;
-  $("music_dir").value = c.music_dir;
-  $("recursive").checked = c.recursive === "1";
-  for(const k of ["write_title","write_artist","write_year","write_album",
-                  "write_album_artist","write_genre","write_track","write_disc",
-                  "write_company","write_language","write_cover","write_lyrics"]){
-    const el = $(k); if(el) el.checked = c[k] === "1";
-  }
-  $("write_enabled").checked = c.write_enabled === "1";
-  $("min_interval").value = c.min_interval;
-  $("concurrency").value = c.concurrency;
-  $("source_limit").value = c.source_limit || 10;
-  const idleMin = parseInt(c.idle_exit_minutes) || 0;
-  $("idle_exit_enable").checked = idleMin > 0;
-  $("idle_exit_minutes").value = idleMin > 0 ? idleMin : 30;
-  toggleIdleExit();
-  const mode = c.matching_mode === "fingerprint" ? "fingerprint" : "filename";
-  const radio = document.querySelector(`input[name="matching_mode"][value="${mode}"]`);
-  if (radio) radio.checked = true;
-  $("acoustid_key").value = c.acoustid_key || "";
+async function unskipAll(){
+  await jsonPost("/api/tasks/unskip", {});
+  msg("已全部恢复为待刮削前"); await loadStats(); await loadQueue();
+}
+async function retryErrors(){
+  const r = await jsonPost("/api/tasks/retry-errors", {});
+  msg(`已恢复 ${r.retried} 首为待刮削前`); await loadStats(); await loadQueue();
+}
+async function exportAutoOk(){
   try{
+    const r = await jsonPost("/api/cache/export-auto-ok", {});
+    if(r.running){ msg("已有导出任务在运行"); return; }
+    msg(`开始导出 ${r.total} 首已写入歌曲到缓存…（后台执行，可关闭页面）`);
+    if(exportTimer) clearInterval(exportTimer);
+    exportTimer = setInterval(async () => {
+      try{
+        const s = await api("/api/cache/export-status");
+        if(!s.running){
+          clearInterval(exportTimer); exportTimer = null;
+          msg(`导出完成：${s.done} 首已写入缓存（失败 ${s.errors}）`);
+        }
+      }catch(e){}
+    }, 2000);
+  }catch(e){ msg("导出失败：" + (e.message||e)); }
+}
+async function writeAuto(){
+  try{
+    const r = await jsonPost("/api/write-auto", {});
+    msg(`补写入完成：写入 ${r.written}，跳过 ${r.skipped}${r.failed ? "，失败 " + r.failed : ""}`);
+    await loadStats(); await loadQueue();
+  }catch(e){ msg("补写入失败：" + (e.message||e)); }
+}
+
+// ---------------- 设置 ----------------
+async function loadConfig(){
+  try{
+    const [c, f] = await Promise.all([api("/api/config"), api("/api/fields")]);
+    fieldDefs = f.fields || [];
+    activeFields = (c.active_fields || "").split(",").filter(Boolean);
+    renderFieldChecks();
+    $("music_dir").value = c.music_dir || "";
+    $("recursive").checked = c.recursive === "1";
+    $("write_enabled").checked = c.write_enabled === "1";
+    $("min_interval").value = c.min_interval || "0.3";
+    $("concurrency").value = c.concurrency || "1";
+    $("source_limit").value = c.source_limit || "10";
+    const idleMin = parseInt(c.idle_exit_minutes) || 0;
+    $("idle_exit_enable").checked = idleMin > 0;
+    $("idle_exit_minutes").value = idleMin > 0 ? idleMin : 30;
+    toggleIdleExit();
+    const mode = c.matching_mode === "fingerprint" ? "fingerprint" : "filename";
+    const radio = document.querySelector(`input[name="matching_mode"][value="${mode}"]`);
+    if(radio) radio.checked = true;
+    $("acoustid_key").value = c.acoustid_key || "";
+    $("plugins_dir").value = c.plugins_dir || "";
     const s = await api("/api/sources");
-    const sel = $("source_checks");
     const cur = (c.source || "").split(",").map(x=>x.trim()).filter(Boolean);
-    sel.innerHTML = "";
-    for(const name of (s.sources||[])){
-      const lbl = document.createElement("label");
-      const cb = document.createElement("input");
-      cb.type = "checkbox"; cb.value = name; cb.id = "src_" + name; cb.checked = cur.includes(name);
-      lbl.appendChild(cb); lbl.appendChild(document.createTextNode(" " + name));
-      sel.appendChild(lbl); sel.appendChild(document.createTextNode(" "));
-    }
-    if(!(s.sources||[]).length){
-      const tip = document.createElement("div");
-      tip.style.cssText = "color:#c0392b;margin:6px 0;line-height:1.6";
-      tip.innerHTML = "⚠ 暂无可用数据源：请把 <b>/vol2/1000/记录文档/数据源</b> 里的 .py 文件复制到插件目录" +
-                      "（" + (s.plugins_dir || "应用数据目录 plugins/") + "），然后在应用中心重启本应用。";
-      sel.appendChild(tip);
-    }
+    $("source_checks").innerHTML = (s.sources||[]).map(name =>
+      `<label style="margin-right:10px"><input type="checkbox" id="src_${esc(name)}"
+        ${cur.includes(name)?"checked":""}> ${esc(name)}</label>`).join("") ||
+      `<span class="muted" style="color:#c0392b">⚠ 暂无可用数据源：请把数据源 .py 复制到插件目录
+       （${esc(s.plugins_dir || "应用数据目录 plugins/")}），然后重启应用</span>`;
     if(s.plugins_dir) $("plugins_dir_hint").textContent = "当前插件目录：" + s.plugins_dir;
-  }catch(e){}
-  $("plugins_dir").value = c.plugins_dir || "";
+  }catch(e){ msg("读取配置失败：" + (e.message||e)); }
+}
+function renderFieldChecks(){
+  $("afChecks").innerHTML = fieldDefs.map(f =>
+    `<label style="font-size:13px"><input type="checkbox" value="${f.key}"
+      ${isActive(f.key)?"checked":""} onchange="toggleField('${f.key}', this.checked)"> ${esc(f.label)}</label>`
+  ).join("");
+  updateFieldSummary();
+}
+function toggleField(key, on){
+  if(on && !activeFields.includes(key)) activeFields.push(key);
+  if(!on) activeFields = activeFields.filter(k => k !== key);
+  updateFieldSummary();
+}
+function updateFieldSummary(){
+  const names = fieldDefs.filter(f => isActive(f.key)).map(f => f.label);
+  $("afSummary").textContent = names.length ? `已生效：${names.join("、")}` : "未选择任何字段（将不显示、不写入任何字段）";
+}
+function toggleFieldDrop(ev){
+  ev.stopPropagation();
+  const p = $("afPanel");
+  const open = p.classList.contains("open");
+  closeAllPops();
+  if(!open){ p.classList.add("open"); placePop(p, $("afBtn")); }
 }
 function toggleIdleExit(){
   const on = $("idle_exit_enable").checked;
@@ -1499,11 +1081,11 @@ function toggleIdleExit(){
 async function saveConfig(){
   try{
     const body = {
-      threshold: parseFloat($("threshold").value),
-      music_dir: $("music_dir").value,
+      music_dir: $("music_dir").value.trim(),
       recursive: $("recursive").checked,
       write_enabled: $("write_enabled").checked,
-      min_interval: parseFloat($("min_interval").value),
+      active_fields: fieldDefs.filter(f => isActive(f.key)).map(f => f.key),
+      min_interval: parseFloat($("min_interval").value) || 0.3,
       concurrency: parseInt($("concurrency").value) || 1,
       source_limit: parseInt($("source_limit").value) || 10,
       idle_exit_minutes: $("idle_exit_enable").checked ? (parseInt($("idle_exit_minutes").value) || 30) : 0,
@@ -1512,38 +1094,43 @@ async function saveConfig(){
       source: Array.from(document.querySelectorAll('#source_checks input:checked')).map(x=>x.value).join(","),
       plugins_dir: $("plugins_dir").value.trim(),
     };
-    for(const k of ["write_title","write_artist","write_year","write_album",
-                    "write_album_artist","write_genre","write_track","write_disc",
-                    "write_company","write_language","write_cover","write_lyrics"]){
-      const el = $(k); if(el) body[k] = el.checked;
-    }
-    await api("/api/config", {method:"PUT", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)});
+    await api("/api/config", {method:"PUT", headers:{"Content-Type":"application/json"},
+                              body: JSON.stringify(body)});
     msg("配置已保存");
-  }catch(e){ msg("保存失败：" + (e.message || e)); }
+    await loadConfig();
+  }catch(e){ msg("保存失败：" + (e.message||e)); }
 }
-$("threshold").oninput = () => $("thVal").textContent = $("threshold").value;
 
 // ---------------- 轮询 ----------------
+// 有浮层/弹窗打开，或用户正在输入框里打字时，不重绘列表（避免打断操作与丢焦点）
+function busyUI(){
+  if(document.querySelector(".modal.open")) return true;
+  if(document.querySelector(".pop.open")) return true;
+  const el = document.activeElement;
+  if(el && ["INPUT","TEXTAREA"].includes(el.tagName)) return true;
+  return false;
+}
 async function poll(){
   try{
     const s = await api("/api/status");
     $("runState").textContent = s.running ? "● 刮削运行中" : "（空闲）";
     $("runState").style.color = s.running ? "var(--ok)" : "#999";
-    if(s.error) msg("调度器错误: " + s.error);
     await loadStats();
-    refreshCurrent();
+    if(!busyUI()) await loadQueue();
   }catch(e){}
 }
 setInterval(poll, 5000);
 (async function init(){
   try{
-    // 开发者收款码（自由自愿打赏）
     const wx = $("donateImgWx"), ali = $("donateImgAli");
     if(wx) wx.src = DONATE_WX;
     if(ali) ali.src = DONATE_ALI;
-    await loadConfig(); await poll();
-  }
-  catch(e){ msg("页面初始化失败：" + (e.message || e)); }
+    const f = await api("/api/fields");
+    fieldDefs = f.fields || [];
+    activeFields = f.active || [];
+    await loadStats();
+    await loadQueue();
+  }catch(e){ msg("页面初始化失败：" + (e.message||e)); }
 })();
 </script>
 </body>

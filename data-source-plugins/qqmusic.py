@@ -470,7 +470,7 @@ class QQMusicSource(MetaSource):
         链路：fpcalc 计算 Chromaprint 指纹 → AcoustID 识别歌名/歌手
         → 用识别结果搜索 QQ 音乐 → 返回带置信度的候选（可继续走自动/人工流程）。
         """
-        from musicmeta.fingerprint import recognize
+        from musicmeta.sources.fingerprint import recognize
         recs = recognize(path, acoustid_key)
         if not recs:
             return []

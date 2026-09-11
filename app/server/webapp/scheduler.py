@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Set
 
 from musicmeta import writer
+from musicmeta.fields import active_fields as active_field_keys
 from musicmeta.filenames import (SUPPORTED_EXTS, CleanedName, build_candidates,
                                  clean_filename, verify_detail)
 from musicmeta.sources.base import SongMeta, normalize_text
@@ -338,37 +339,25 @@ def _cn_err(exc) -> str:
 
 
 def _write_fields(path: str, meta: SongMeta, src, cfg: dict) -> list:
-    """按配置写入标签字段（默认全部），返回实际写入的字段名列表。
+    """按「生效字段」写入标签，返回实际写入的字段名列表。
 
-    写入保护：候选里为空的字段绝不写入 —— 即使该字段被勾选，只要候选值
+    写入保护：候选里为空的字段绝不写入 —— 即使该字段生效，只要候选值
     为空（或纯空白），就跳过，文件里原本已有的数据不会被覆盖成"无"。
     """
     written: list = []
-    on = lambda k: cfg.get(k, "1") == "1"
+    active = set(active_field_keys(cfg))
     has = lambda v: v is not None and str(v).strip() != ""
     partial = SongMeta()
-    if on("write_title") and has(meta.title):
-        partial.title = str(meta.title).strip()
-    if on("write_artist") and has(meta.artist):
-        partial.artist = str(meta.artist).strip()
-    if on("write_year") and has(meta.date):
-        partial.date = str(meta.date).strip()
-    if on("write_album") and has(meta.album):
-        partial.album = str(meta.album).strip()
-    if on("write_album_artist") and has(meta.album_artist):
-        partial.album_artist = str(meta.album_artist).strip()
-    if on("write_genre") and has(meta.genre):
-        partial.genre = str(meta.genre).strip()
-    if on("write_track") and has(meta.track):
-        partial.track = str(meta.track).strip()
+    for key, attr in (("title", "title"), ("artist", "artist"),
+                      ("album", "album"), ("album_artist", "album_artist"),
+                      ("year", "date"), ("genre", "genre"),
+                      ("track", "track"), ("disc", "disc"),
+                      ("publisher", "publisher"), ("language", "language")):
+        value = getattr(meta, attr, "")
+        if key in active and has(value):
+            setattr(partial, attr, str(value).strip())
     if has(meta.track_total):
         partial.track_total = str(meta.track_total).strip()
-    if on("write_disc") and has(meta.disc):
-        partial.disc = str(meta.disc).strip()
-    if on("write_company") and has(meta.publisher):
-        partial.publisher = str(meta.publisher).strip()
-    if on("write_language") and has(meta.language):
-        partial.language = str(meta.language).strip()
     if partial.title or partial.artist or partial.date or partial.album \
             or partial.album_artist or partial.genre or partial.track \
             or partial.disc or partial.publisher or partial.language:
@@ -381,7 +370,7 @@ def _write_fields(path: str, meta: SongMeta, src, cfg: dict) -> list:
                      ("language", partial.language)):
             if v:
                 written.append(k)
-    if on("write_cover"):
+    if "cover" in active:
         # 已确认歌曲（f: 缓存导出）：文件里已写入过封面 → 直接跳过下载
         skip_cover = False
         if meta.extra.get("confirmed"):
@@ -406,7 +395,7 @@ def _write_fields(path: str, meta: SongMeta, src, cfg: dict) -> list:
             if cover:
                 writer.write_cover(path, cover)
                 written.append("cover")
-    if on("write_lyrics"):
+    if "lyrics" in active:
         lrc = meta.extra.get("lyrics") or ""
         if not lrc and hasattr(src, "fetch_lyrics"):
             lrc = lyrics_cached(src, meta.song_id)
