@@ -219,6 +219,10 @@
       position:sticky; top:0; z-index:5; background:#fff;
       padding:8px 0; margin-bottom:8px; border-bottom:1px solid #e3e6ea;
     }
+    /* 窄屏：把候选菜单最小列宽调小，手机也能排 2 列（此前只能 1 列） */
+    .cand-menu { grid-template-columns:repeat(auto-fill,minmax(146px,1fr)); width:96vw; }
+    .cand-menu .cm-val { font-size:12px; }
+    .cand-menu .cm-src { font-size:10.5px; padding:1px 6px; }
     .scrub-row .sr-name { width:60px; }
     .scrub-row .sr-cell { min-width:100%; }
     .lrc-col { min-width:100%; }
