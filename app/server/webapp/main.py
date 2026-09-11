@@ -756,27 +756,28 @@ def decide_batch(body: BatchDecideBody):
 
 def _search_by_words(file: str, words: list, cfg: dict, force_live: bool = False,
                      use_cache: bool = True) -> list:
-    """按一组 (title, artist) 关键词跨全部选中源搜索候选并打分（共享逻辑）。
+    """按一组 (title, artist) 关键词跨全部选中源搜索候选并排序（共享逻辑）。
 
-    words: [(title, artist), ...]；通常来自文件名解析或用户手动输入。
-    force_live: 跳过缓存强制在线（重新搜索/手动搜索用）。
+    words: [(title, artist), ...]；用于「用户手动输入歌名/歌手」的场景
+    （文件名自动刮削请用 scheduler.match_file，走候选词 + 命中即停）。
+    force_live: 跳过缓存强制在线。
     use_cache=False 时仍走 search_cached（其内部缓存），此参数预留。
-    返回按 confidence 降序的 SongMeta 列表（未写库）。
+    返回 SongMeta 列表：通过文件名反推校验的排最前，其余按排序分降序。
     """
+    from musicmeta.filenames import clean_filename, verify_detail
     from musicmeta.sources.registry import get_source
     names = [n.strip() for n in cfg.get("source", "").split(",") if n.strip()]
     plimit = max(1, int(cfg.get("source_limit", "10")))
     fdur = scheduler._file_duration(file)
-    # 按 (源, song_id) 保留分数最高的候选（正序/反序可能命中同一首歌，
-    # 让高分版本胜出，而非先到先得——否则反序高分会被正序低分占坑丢弃）。
+    stem = clean_filename(os.path.basename(file)).stem
+    # 排序用的「关键词段」= 用户输入的歌名/歌手
+    segs = [t for t, _a in words if t] + [a for _t, a in words if a]
+    # 按 (源, song_id) 去重
     best_map: dict = {}
     for name in names:
         try:
             src = get_source(name, min_interval=float(cfg.get("min_interval", "0.3")))
             for title, artist in words:
-                # round_seen 只防「同一关键词」内重复请求；
-                # 不同关键词命中同一首歌时，由 best_map 保留高分版本，
-                # 否则正序轮先占坑会拦截反序轮同歌的高分命中。
                 round_seen = set()
                 for meta in scheduler.search_cached(src, title, artist,
                                                     limit=plimit,
@@ -784,15 +785,20 @@ def _search_by_words(file: str, words: list, cfg: dict, force_live: bool = False
                     key = (name, meta.song_id)
                     if meta.song_id and key not in round_seen:
                         round_seen.add(key)
-                        meta.confidence = scheduler._rescore(
-                            meta, title, artist, fdur)
+                        # 手动搜索也用同一套反推校验，仅用于排序（不拦截结果）
+                        ok, why = verify_detail(stem, meta.title, meta.artist)
+                        meta.extra["verified"] = bool(ok)
+                        meta.extra["verify_reason"] = why
+                        meta.confidence = scheduler._rescore(meta, segs, fdur)
                         prev = best_map.get(key)
-                        if prev is None or meta.confidence > prev.confidence:
+                        if prev is None or scheduler._rank_key(meta) > \
+                                scheduler._rank_key(prev):
                             best_map[key] = meta
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            print(f"[search] 源 {name} 手动搜索「{words}」异常: {exc}")
             continue
     metas = list(best_map.values())
-    metas.sort(key=lambda m: m.confidence, reverse=True)
+    metas.sort(key=scheduler._rank_key, reverse=True)
     return metas
 
 
@@ -800,63 +806,63 @@ def _search_by_words(file: str, words: list, cfg: dict, force_live: bool = False
 def refresh_candidates(file: str):
     """对单个文件重新搜索候选（使用全部选中源，合并显示）。
 
-    与自动刮削同等规则：若最高分候选达到阈值（默认 0.9）且已启用写入，
-    直接自动写入并标记 auto_ok（不再进人工队列）。
-    之前因超时/网络没搜到结果的歌，重新搜索命中高分候选时即自动完成。
+    与自动刮削完全同一套规则（scheduler.match_file）：
+    清洗文件名 → 候选词逐个搜索（命中即停）→ 用搜索结果反推校验。
+    出现通过校验的候选即标记 auto_ok（write_enabled=1 时同时写入文件）；
+    未通过校验则留在人工队列，并把候选列表返回给人工挑选。
     """
     if not os.path.isfile(file):
         raise HTTPException(400, f"文件不存在: {file}")
     cfg = db.get_config()
-    from musicmeta.filenames import parse_candidates, reverse_candidates
-    cands = parse_candidates(os.path.basename(file))
-    words = [(c.title, c.artist) for c in cands]
-    metas = _search_by_words(file, words, cfg, force_live=True)
-    # 文件名方向兜底：正向结果没有达标候选时，用反序候选补搜一轮
-    # （reverse_candidates 已交换 title/artist，直接取其 title/artist）
-    if not any(m.confidence >= float(cfg.get("threshold", "0.9")) * 100.0
-               for m in metas):
-        rev = [(c.title, c.artist) for c in reverse_candidates(cands)]
-        if rev:
-            metas = _search_by_words(file, words + rev, cfg, force_live=True)
+    res = scheduler.match_file(file, cfg, force_live=True)
+    metas = res.metas
     db.add_candidates(file, [scheduler._meta_to_dict(m) for m in metas])
 
     auto_written = False
     write_error = ""
-    if metas:
-        best = metas[0]
-        threshold = float(cfg.get("threshold", "0.9"))
-        score01 = max(0.0, min(1.0, best.confidence / 100.0))
-        if score01 >= threshold:
-            written: list = []
-            if cfg.get("write_enabled") == "1":
-                # 与自动刮削同一套写入流程（含 enrich）
+    if res.verified:
+        best = res.verified[0]
+        written: list = []
+        if cfg.get("write_enabled") == "1":
+            # 与自动刮削同一套写入流程（含 enrich）
+            src = None
+            try:
+                src = _resolve_src(best.source, float(cfg.get("min_interval", "0.3")))
+            except Exception:
                 src = None
-                try:
-                    src = _resolve_src(best.source, float(cfg.get("min_interval", "0.3")))
-                except Exception:
-                    src = None
-                try:
-                    if src is not None and hasattr(src, "enrich"):
-                        best = scheduler.enrich_cached(src, best)
-                except Exception:
-                    pass
-                try:
-                    written = scheduler._write_fields(file, best, src, cfg)
-                except OSError as exc:
-                    # 权限等写入失败：不标 500，返回提示，任务留在人工队列
-                    write_error = scheduler._cn_err(exc)
-                except Exception as exc:  # noqa: BLE001
-                    write_error = f"写入失败：{exc}"
-            if not write_error:
-                db.update_task_status(
-                    file, "auto_ok", score=best.confidence, title=best.title,
-                    artist=best.artist, album=best.album, year=best.date,
-                    written=",".join(written))
-                auto_written = True
-                if written:
-                    _invalidate_filter_cache(file)
+            try:
+                if src is not None and hasattr(src, "enrich"):
+                    best = scheduler.enrich_cached(src, best)
+            except Exception:
+                pass
+            try:
+                written = scheduler._write_fields(file, best, src, cfg)
+            except OSError as exc:
+                # 权限等写入失败：不标 500，返回提示，任务留在人工队列
+                write_error = scheduler._cn_err(exc)
+            except Exception as exc:  # noqa: BLE001
+                write_error = f"写入失败：{exc}"
+        if not write_error:
+            db.update_task_status(
+                file, "auto_ok", score=best.confidence, title=best.title,
+                artist=best.artist, album=best.album, year=best.date,
+                written=",".join(written))
+            auto_written = True
+            if written:
+                _invalidate_filter_cache(file)
+    elif metas:
+        top = metas[0]
+        msg = ("文件名里只有歌名、没有歌手，无法完成「歌名+歌手都出现在文件名中」的"
+               "反推校验；请手动搜索确认，或改用指纹模式，待人工辅助"
+               if res.title_only else
+               "未通过文件名反推校验（结果歌名/歌手未同时出现在文件名中）；"
+               "可手动搜索，或用音频指纹（Chromaprint+AcoustID）识别，待人工辅助")
+        db.update_task_status(
+            file, "manual_pending", score=top.confidence, title=top.title,
+            artist=top.artist, album=top.album, year=top.date, error=msg)
     return {"candidates": db.get_candidates(file), "auto_written": auto_written,
-            "write_error": write_error}
+            "write_error": write_error, "queries": res.queries,
+            "verified": len(res.verified)}
 
 
 class ManualSearchBody(BaseModel):
@@ -1019,7 +1025,6 @@ def _export_auto_ok_worker():
                                  last="qqmusic 插件不可用（无法导出到缓存）")
             return
         from musicmeta import writer as _w
-        from musicmeta.filenames import parse_candidates
         with db.connect() as c:
             rows = c.execute(
                 "SELECT path FROM tasks WHERE status='auto_ok'").fetchall()
@@ -1071,7 +1076,8 @@ def _export_auto_ok_worker():
                 with db.connect() as c2:
                     cand = c2.execute(
                         "SELECT songmid, albummid, duration FROM candidates "
-                        "WHERE file_path=? ORDER BY score DESC LIMIT 1",
+                        "WHERE file_path=? "
+                        "ORDER BY COALESCE(verified,0) DESC, score DESC LIMIT 1",
                         (path,)).fetchone()
                 if cand:
                     meta_dict["song_id"] = cand["songmid"] or ""
@@ -1084,15 +1090,24 @@ def _export_auto_ok_worker():
                             _mc.set(_mc.key("qqmusic", "l", cand["songmid"]), lrc)
                         except Exception:
                             pass
-                # 为每个文件名解析候选写入 f: 缓存（解析不一致也能命中）；
-                # key 与 search_cached 一致（清理后的标题|歌手）
+                # 为每个「候选查询词」写入 f: 缓存（解析不一致也能命中）；
+                # key 必须与 search_cached(src, cand.text, "") 一致，
+                # 否则新链路（候选词整体搜索、artist 留空）会命中不到缓存。
                 from musicmeta import cache as _mc
-                for pc in parse_candidates(os.path.basename(path)):
-                    qt, qa = scheduler._search_query_keys(pc.title, pc.artist)
-                    kt = qt or pc.title.strip()
-                    ka = qa or pc.artist.strip()
+                from musicmeta.filenames import (build_candidates,
+                                                 clean_filename,
+                                                 parse_candidates)
+                name = os.path.basename(path)
+                keys: list = []
+                for c in build_candidates(clean_filename(name)):
+                    keys.append(scheduler._search_query_keys(c.text, ""))
+                # 兼容旧链路的键（历史缓存/旧版写下的键）
+                for pc in parse_candidates(name):
+                    keys.append(scheduler._search_query_keys(pc.title, pc.artist))
+                for qt, qa in keys:
+                    kt = qt or ""
                     if kt:
-                        _mc.set(_mc.key("qqmusic", "f", kt, ka), [meta_dict])
+                        _mc.set(_mc.key("qqmusic", "f", kt, qa), [meta_dict])
                 done += 1
             except Exception:  # noqa: BLE001 - 单首失败不影响整体
                 errs += 1
@@ -1156,6 +1171,9 @@ def _meta_full(m) -> dict:
         "album_artist": m.album_artist, "track": m.track,
         "cover_url": m.extra.get("cover_url", ""),
         "lyrics": m.extra.get("lyrics", ""),
+        # 文件名反推校验结果（1=歌名+歌手都出现在文件名中）
+        "verified": bool(m.extra.get("verified")),
+        "verify_reason": m.extra.get("verify_reason", ""),
     }
 
 
@@ -1193,8 +1211,11 @@ def field_candidates(file: str):
     cfg = db.get_config()
     names = [n.strip() for n in cfg.get("source", "").split(",") if n.strip()]
     plimit = max(1, int(cfg.get("source_limit", "10")))
-    from musicmeta.filenames import parse_candidates
+    from musicmeta.filenames import (build_candidates, clean_filename,
+                                     verify_detail)
     from musicmeta.sources.registry import get_source
+    cleaned = clean_filename(os.path.basename(file))
+    cands = build_candidates(cleaned)
     result: dict = {}
     for name in names:
         try:
@@ -1203,21 +1224,28 @@ def field_candidates(file: str):
             continue
         metas = []
         try:
-            for cand in parse_candidates(os.path.basename(file)):
-                for m in scheduler.search_cached(src, cand.title, cand.artist,
-                                                 limit=plimit):
+            # 与自动刮削同一套候选词顺序，本源找到「通过反推校验」的候选即停
+            for cand in cands:
+                hit = False
+                for m in scheduler.search_cached(src, cand.text, "", limit=plimit):
+                    ok, why = verify_detail(cleaned.stem, m.title, m.artist)
+                    m.extra["verified"] = bool(ok)
+                    m.extra["verify_reason"] = why
                     try:
                         if hasattr(src, "enrich"):
                             m = scheduler.enrich_cached(src, m)   # 补封面/歌词
                     except Exception:
                         pass
+                    m.extra["verified"] = bool(ok)   # enrich 后再标一次，供前端展示
                     metas.append(_meta_full(m))
-                break  # 只取第一个文件名候选解析
+                    hit = hit or ok
+                if hit:
+                    break
         except Exception:
             continue
         if metas:
             result[name] = metas
-    return {"sources": result}
+    return {"sources": result, "queries": [c.text for c in cands]}
 
 
 class FieldWriteBody(BaseModel):

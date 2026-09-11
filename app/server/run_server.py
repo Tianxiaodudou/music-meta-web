@@ -44,8 +44,9 @@ class MySource(MetaSource):
         self.min_interval = min_interval
 
     def search(self, title: str, artist: str = "", limit: int = 10) -> List[SongMeta]:
-        # 1) 构造搜索词（歌名+歌手） 2) HTTP 请求你的数据渠道（GET+urllib 即可）
-        # 3) 解析 JSON → 构造 SongMeta 列表 4) confidence 打分(0~100)
+        # 1) 构造搜索词（文件名模式下 artist 为空、title 是候选关键词）
+        # 2) HTTP 请求你的数据渠道（GET+urllib 即可）
+        # 3) 解析 JSON → 构造 SongMeta 列表 4) confidence 可留 0（应用层会重算排序分）
         # 5) 需要时 enrich() 用 song_id/album_id 补详情
         return []   # ← 你的实现
 
@@ -61,12 +62,17 @@ title 歌曲名 | artist 歌手 | album 专辑 | album_artist 专辑艺人
 date 发行日期(YYYY 或 YYYY-MM-DD) | genre 流派
 track 曲目号 | track_total 总曲目 | disc 碟号
 publisher 唱片公司 | language 语言 | comment 注释
-song_id/album_id 源内ID | confidence 置信度(0~100，/100 与阈值比较)
+song_id/album_id 源内ID | confidence 源内参考分(0~100)
 extra 附加: cover_url(封面URL)、lyrics(LRC歌词)、duration
 
-## 打分
-可用 musicmeta.sources.base.simple_score(want_title, want_artist, got_title, got_artists)
-（0~100：基础40 + 标题一致/包含 + 歌手一致/包含）。参考实现：
+## 命中判定与打分（v1.4 起）
+- 命中判定不看分数：文件名模式下，应用把文件名拆成候选关键词逐个搜索（命中即停），
+  再用搜索结果反推——结果的 trackName 与 artistName 都要出现在原始文件名中才算命中
+  （顺序无关，兼容「歌手-歌名」与「歌名-歌手」）。因此插件收到的 search() 中
+  artist 为空、title 是候选关键词，插件不必、也无法自行判断谁是歌手。
+- 打分只用于候选排序，由应用层统一重算（校验通过 +40 / 时长接近度 +40 / 关键词吻合 +15+5）。
+  插件内部的 confidence 仅作参考，可留 0；`simple_score()` 仍可用于插件自己筛结果。
+  参考实现：
 /vol2/1000/记录文档/数据源/qqmusic.py（最完整）。
 
 ## 封面/歌词兜底

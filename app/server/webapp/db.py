@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS candidates (
     albummid  TEXT, duration INTEGER,
     score     REAL,
     source    TEXT,                  -- 候选来自哪个元数据源（多选合并时区分）
+    verified  INTEGER,               -- 是否通过「文件名反推校验」（1=歌名+歌手都出现在文件名中）
     PRIMARY KEY (file_path, songmid)
 );
 CREATE TABLE IF NOT EXISTS decisions (
@@ -53,7 +54,10 @@ CREATE INDEX IF NOT EXISTS idx_manual_done_hash ON manual_done(file_hash);
 """
 
 DEFAULTS: Dict[str, str] = {
-    "threshold": "0.9",              # 匹配阈值（0~1）
+    # 【已废弃】旧「最高分 ≥ 阈值才自动写入」的阈值（0~1）。
+    # 现在是否自动写入由第 4 步「文件名反推校验」决定（见 scheduler.match_file），
+    # 打分只用于候选排序；该配置仅为兼容旧库/旧前端保留，不再参与判定。
+    "threshold": "0.9",
     "music_dir": "",                 # 学习/刮削目录（安装向导必填；需在应用设置中授权读取）
     "recursive": "1",
     "write_enabled": "0",            # 安全开关：默认不写入（学习模式）
@@ -65,7 +69,7 @@ DEFAULTS: Dict[str, str] = {
     # 注意：退出后 fnOS 会把应用标记为「未运行」，需到应用中心重新启用才能打开。
     "idle_exit_minutes": "0",
     # 匹配方式：二选一，不自动混用
-    #   filename   = 按文件名匹配（歌曲名-歌手 → 元数据源搜索）
+    #   filename   = 按文件名匹配（候选关键词搜索 → 用搜索结果反推歌名/歌手）
     #   fingerprint= 按音频指纹识别（fpcalc → AcoustID → 回查 QQ，需 qqmusic 插件）
     "matching_mode": "filename",
     "acoustid_key": "",              # AcoustID API key（安装向导可配，免费注册 https://acoustid.org/new-application）
@@ -103,6 +107,9 @@ def init_db() -> None:
         ccols = [r[1] for r in c.execute("PRAGMA table_info(candidates)").fetchall()]
         if "source" not in ccols:
             c.execute("ALTER TABLE candidates ADD COLUMN source TEXT")
+        # 兼容旧库：补 candidates.verified 列（文件名反推校验结果）
+        if "verified" not in ccols:
+            c.execute("ALTER TABLE candidates ADD COLUMN verified INTEGER")
         for key, value in DEFAULTS.items():
             c.execute("INSERT OR IGNORE INTO config(key, value) VALUES(?, ?)",
                       (key, value))
@@ -383,19 +390,21 @@ def add_candidates(file_path: str, metas: List[dict]) -> None:
         for m in metas:
             c.execute(
                 "INSERT OR REPLACE INTO candidates(file_path, songmid, title, "
-                "artist, album, year, albummid, duration, score, source) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                "artist, album, year, albummid, duration, score, source, verified) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 (file_path, m.get("song_id", ""), m.get("title", ""),
                  m.get("artist", ""), m.get("album", ""), m.get("date", ""),
                  m.get("album_id", ""), m.get("duration", 0),
-                 m.get("confidence", 0.0), m.get("source", "")))
+                 m.get("confidence", 0.0), m.get("source", ""),
+                 1 if m.get("verified") else 0))
 
 
 def get_candidates(file_path: str) -> List[dict]:
+    """候选列表：通过「文件名反推校验」的排最前，其余按排序分降序。"""
     with connect() as c:
         rows = c.execute(
             "SELECT * FROM candidates WHERE file_path=? "
-            "ORDER BY score DESC", (file_path,)).fetchall()
+            "ORDER BY COALESCE(verified,0) DESC, score DESC", (file_path,)).fetchall()
     return [dict(r) for r in rows]
 
 

@@ -1,20 +1,25 @@
 # -*- coding: utf-8 -*-
 """后台刮削调度器：扫描 -> 逐个匹配 -> 自动写入或进人工队列。
 
-规则：
-- 匹配值(0~1) >= 阈值（配置 threshold，默认 0.9）→ 自动写入音乐文件
-- 匹配值 < 阈值 或 无匹配 → 进入人工辅助队列（manual_pending）
-- 只写配置启用的字段（默认：封面图/演唱歌手/发行年份/歌词，标题可选）
-- write_enabled=0 时只分类不写入（学习/预览模式）
+匹配规则（文件名模式）：
+- 第 1 步 清洗文件名：去扩展名/音轨号/噪音标签（[320K]/(Hi-Res)/官方版/MV…）
+- 第 2 步 生成候选查询词：整串 + 左右段（分隔符优先级）+ 括号内内容
+- 第 3 步 逐个候选搜索，某个候选一旦出现「通过校验」的结果即停止后续候选（命中即停）
+- 第 4 步 用搜索结果反推：结果 trackName 与 artistName 都出现在原始文件名中
+  → 命中（顺序无关，天然兼容「歌手-歌名」与「歌名-歌手」两种命名）
+- 命中 → 自动写入（write_enabled=1 时）；未命中 → 人工辅助队列 manual_pending
+- 打分只用于候选排序，不再参与「是否命中」的判定
 """
 from __future__ import annotations
 
 import os
 import threading
+from dataclasses import dataclass, field
 from typing import List, Optional, Set
 
 from musicmeta import writer
-from musicmeta.filenames import SUPPORTED_EXTS, parse_candidates
+from musicmeta.filenames import (SUPPORTED_EXTS, CleanedName, build_candidates,
+                                 clean_filename, verify_detail)
 from musicmeta.sources.base import SongMeta, normalize_text
 from musicmeta.sources.registry import get_source
 
@@ -49,7 +54,117 @@ def _meta_to_dict(m: SongMeta) -> dict:
         "album": m.album, "date": m.date, "album_id": m.album_id,
         "duration": m.duration, "confidence": m.confidence,
         "source": m.source,
+        # 第 4 步：是否通过「文件名反推校验」（歌名+歌手都出现在文件名中）
+        "verified": bool(m.extra.get("verified")),
     }
+
+
+def _verified(m: SongMeta) -> bool:
+    """该候选是否通过了第 4 步「文件名反推校验」。"""
+    return bool(m.extra.get("verified"))
+
+
+def _rank_key(m: SongMeta):
+    """候选排序键：通过反推校验的优先，其次按排序分，最后按字段完整度。
+
+    注意：这里的 confidence 只是排序分，不参与「是否命中」的判定。
+    """
+    filled = (1 if m.album else 0) + (1 if m.date else 0) \
+        + (1 if m.duration else 0) + (1 if m.album_id else 0)
+    return (1 if _verified(m) else 0, float(m.confidence or 0.0), filled)
+
+
+def resolve_sources(cfg: dict) -> list:
+    """按配置勾选的源建立独立实例（各自限速；插件未安装则跳过）。"""
+    names = [n.strip() for n in cfg.get("source", "").split(",") if n.strip()]
+    sources = []
+    for n in names:
+        try:
+            sources.append(get_source(
+                n, min_interval=float(cfg.get("min_interval", "0.3"))))
+        except Exception as exc:  # noqa: BLE001
+            print(f"[scheduler] 元数据源 {n} 不可用（插件未安装？）: {exc}")
+    return sources
+
+
+@dataclass
+class MatchResult:
+    """一个文件的文件名匹配结果。"""
+
+    cleaned: CleanedName                    # 第 1 步清洗结果
+    queries: List[str] = field(default_factory=list)   # 实际发出的候选词
+    metas: List[SongMeta] = field(default_factory=list)   # 全部候选（已排序）
+    verified: List[SongMeta] = field(default_factory=list)  # 通过反推校验的候选
+    err_count: int = 0                      # 搜索异常次数（区分"搜不到"和"搜索失败"）
+    # 文件名里没有任何分隔符 → 只有歌名、没有歌手信息，
+    # 「歌名+歌手都出现在文件名中」这条校验天然无法满足（用于给出准确提示）
+    title_only: bool = False
+
+
+def match_file(path: str, cfg: dict, sources: Optional[list] = None,
+               force_live: bool = False) -> MatchResult:
+    """刮削核心：清洗文件名 → 候选词逐个搜索（命中即停）→ 搜索结果反推校验。
+
+    - 不做「哪个是歌手、哪个是歌名」的方向猜测：候选词直接送去搜索，
+      由搜索结果反推（verify_detail），因此不需要反序再搜一轮。
+    - 命中即停：某个候选词一旦出现通过校验的结果，不再尝试后续候选词。
+    - 单个候选词会查询所有选中源（便于人工队列里比较来源差异），
+      但候选词层面的请求量已被早停压住。
+    - 打分（_rescore）只用于候选排序。
+    """
+    name = os.path.basename(path)
+    cleaned = clean_filename(name)
+    cands = build_candidates(cleaned)
+    plimit = max(1, int(cfg.get("source_limit", "10")))
+    fdur = _file_duration(path)
+    if sources is None:
+        sources = resolve_sources(cfg)
+
+    metas: List[SongMeta] = []
+    verified: List[SongMeta] = []
+    queries: List[str] = []
+    seen: Set[tuple] = set()
+    err_count = 0
+    # 排序用的「文件名切分段」= 全部候选词（含早停后未尝试的），
+    # 这样歌名/歌手与文件名各段的吻合度都能算到
+    segs = [c.text for c in cands]
+
+    for cand in cands:
+        queries.append(cand.text)
+        for src in sources:
+            src_name = getattr(src, "name", "?")
+            try:
+                # 候选词整体作为搜索词（artist 留空），不做方向判断
+                for meta in search_cached(src, cand.text, "", limit=plimit,
+                                          force_live=force_live):
+                    if not meta.song_id:
+                        continue
+                    key = (src_name, meta.song_id)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    # 第 4 步：先用搜索结果反推校验，再算排序分
+                    ok, why = verify_detail(cleaned.stem, meta.title, meta.artist)
+                    meta.extra["verified"] = bool(ok)
+                    meta.extra["verify_reason"] = why
+                    meta.extra["query"] = cand.text
+                    meta.confidence = _rescore(meta, segs, fdur)
+                    metas.append(meta)
+                    if ok:
+                        verified.append(meta)
+            except Exception as exc:  # noqa: BLE001
+                err_count += 1
+                print(f"[scheduler] 源 {src_name} 搜索「{cand.text}」异常: {exc}")
+        if verified:
+            break   # 命中即停：找到匹配就不再发后续候选词
+
+    metas.sort(key=_rank_key, reverse=True)
+    verified.sort(key=_rank_key, reverse=True)
+    # 没有 left/right 候选 → 文件名里没有分隔符 → 没有歌手信息可校验
+    title_only = not any(c.kind in ("left", "right") for c in cands)
+    return MatchResult(cleaned=cleaned, queries=queries, metas=metas,
+                       verified=verified, err_count=err_count,
+                       title_only=title_only)
 
 
 def _search_query_keys(title: str, artist: str):
@@ -340,30 +455,41 @@ def _qq_fallback(src, meta: SongMeta):
         return None, None
 
 
-def _rescore(meta: SongMeta, want_title: str, want_artist: str,
-             file_duration: int) -> float:
-    """候选重新打分：基础分 + 时长接近加分 + 标题/歌手与文件名匹配加分。
+def _rescore(meta: SongMeta, cand_texts, file_duration: int) -> float:
+    """候选**排序分**（0~100）：只决定候选列表先后顺序，不参与命中判定。
 
-    - 候选时长与音频文件时长越接近，加分越多（最高 +15）
-    - 标题与文件名解析出的歌名越匹配加分（精确 +10 / 互相包含 +5）
-    - 歌手与文件名解析出的歌手越匹配加分（+5）
+    组成（相加，封顶 100）：
+    - 第 4 步「文件名反推校验」通过：            +40（最强信号）
+    - 时长接近度：min/max 比值 ≥0.5 时          +40 × ratio（文件时长与候选时长都有才算）
+    - 结果歌名正好等于某个候选词（文件名切分段）：+15，互为子串 +8
+    - 结果歌手与某个候选词吻合：                 +5
+
+    已确认歌曲（历史上人工/自动写过的精确匹配，extra.confirmed）直接 100 分。
+
+    注意：源插件内部的打分（QQ 的 _score / 通用 simple_score）在新链路里是拿
+    「候选词」当期望值算的，含负分惩罚项，直接用作排序会失真，因此这里统一
+    用文件名 + 时长这两个客观信号重算。是否命中由 verify_detail() 决定。
     """
-    score = float(meta.confidence)
-    # 时长接近度（文件时长已知且候选有时长）
+    if meta.extra.get("confirmed"):
+        return 100.0
+    score = 0.0
+    if _verified(meta):
+        score += 40.0
     if file_duration and meta.duration:
         ratio = min(file_duration, meta.duration) / max(file_duration, meta.duration)
         if ratio >= 0.5:
-            score += 15.0 * ratio
-    # 标题匹配
-    wt, gt = normalize_text(want_title), normalize_text(meta.title)
-    if wt and gt:
-        if gt == wt:
-            score += 10.0
-        elif len(gt) >= 4 and (gt in wt or wt in gt):
-            score += 5.0
-    # 歌手匹配
-    wa, ga = normalize_text(want_artist), normalize_text(meta.artist)
-    if wa and ga and (wa == ga or wa in ga or ga in wa):
+            score += 40.0 * ratio
+    segs = {normalize_text(x) for x in (cand_texts or []) if x}
+    gt = normalize_text(meta.title)
+    if gt and segs:
+        if gt in segs:
+            score += 15.0
+        elif any(len(gt) >= 2 and (gt in s or (len(s) >= 2 and s in gt))
+                 for s in segs):
+            score += 8.0
+    ga = normalize_text(meta.artist)
+    if ga and segs and any(ga == s or (len(ga) >= 2 and (ga in s or s in ga))
+                           for s in segs):
         score += 5.0
     return round(min(100.0, score), 1)
 
@@ -430,14 +556,8 @@ class Scraper(threading.Thread):
         if pdir:
             import os
             os.environ["MMW_PLUGINS_DIR"] = pdir
-        # 多源：逗号分隔选择，每个源独立实例（各自限速）；数据源均为插件
-        names = [n.strip() for n in cfg.get("source", "").split(",") if n.strip()]
-        sources = []
-        for n in names:
-            try:
-                sources.append(get_source(n, min_interval=float(cfg.get("min_interval", "0.3"))))
-            except Exception as exc:  # noqa: BLE001
-                print(f"[scheduler] 元数据源 {n} 不可用（插件未安装？）: {exc}")
+        # 多源：逗号分隔选择，每个源独立实例（各自限速）
+        sources = resolve_sources(cfg)
         if not sources:
             # 未安装任何数据源插件：任务保持排队，提示用户后退出本 worker
             print("[scheduler] 未安装任何元数据源插件，任务保持排队。"
@@ -468,8 +588,10 @@ class Scraper(threading.Thread):
     # ---------------- 单文件处理 ----------------
 
     def _process(self, path: str, sources: list, cfg: dict) -> None:
-        """按配置的匹配方式处理单个文件；多源候选合并，每源最多 10 条。"""
+        """按配置的匹配方式处理单个文件；多源候选合并，每源最多 source_limit 条。"""
         metas: List[SongMeta] = []
+        err_count = 0
+        res: Optional[MatchResult] = None
         mode = cfg.get("matching_mode", "filename")
 
         if mode == "fingerprint":
@@ -495,55 +617,11 @@ class Scraper(threading.Thread):
                                       error=f"指纹识别失败: {exc}")
                 return
         else:
-            # 文件名模式：遍历所有选中源，合并候选（每源前 N 条，N 由配置 source_limit 决定）
-            from musicmeta.filenames import reverse_candidates
-            plimit = max(1, int(cfg.get("source_limit", "10")))
-            fdur = _file_duration(path)
-            metas: List[SongMeta] = []
-            err_count = 0
-
-            # 按 (源, song_id) 保留分数最高的候选：
-            # 正序/反序两轮可能返回同一首歌，必须让高分版本胜出（而非先到先得）。
-            best_map: dict = {}
-
-            def _collect(cands) -> None:
-                """对一组 (title, artist) 候选跨所有选中源搜索并打分，就地并入 metas。"""
-                nonlocal err_count
-                round_seen: Set[tuple] = set()   # 仅本轮内去重防重复请求
-                for src in sources:
-                    try:
-                        for cand in cands:
-                            # 应用层统一缓存：同一首歌只请求一次服务器
-                            for meta in search_cached(src, cand.title, cand.artist,
-                                                      limit=plimit):
-                                key = (src.name, meta.song_id)
-                                if meta.song_id and key not in round_seen:
-                                    round_seen.add(key)
-                                    # 重新打分：时长接近 + 标题/歌手与文件名匹配优先
-                                    meta.confidence = _rescore(meta, cand.title,
-                                                               cand.artist, fdur)
-                                    prev = best_map.get(key)
-                                    if prev is None or meta.confidence > prev.confidence:
-                                        best_map[key] = meta
-                    except Exception as exc:  # noqa: BLE001
-                        err_count += 1
-                        print(f"[scheduler] 源 {getattr(src, 'name', '?')} 搜索异常: {exc}")
-
-            base_cands = parse_candidates(os.path.basename(path))
-            _collect(base_cands)
-            # 文件名方向兜底：若文件名其实是「歌手-歌名」（如「周杰伦-晴天」），
-            # 正向解析的 title/artist 是反的，搜索结果难以达标。
-            # 仅当正向结果中没有达到阈值的高分候选时，用反序候选补搜一轮，
-            # 避免普通「歌名-歌手」文件产生双倍在线请求。
-            need_rev = (not best_map) or max(
-                (m.confidence for m in best_map.values()), default=0.0) \
-                < float(cfg.get("threshold", "0.9")) * 100.0
-            if need_rev:
-                rev = reverse_candidates(base_cands)
-                if rev:
-                    _collect(rev)
-            metas = list(best_map.values())
-            metas.sort(key=lambda m: m.confidence, reverse=True)
+            # 文件名模式：第 1~4 步全在 match_file 里完成
+            # （清洗 → 候选词 → 逐个搜索（命中即停）→ 结果反推校验）
+            res = match_file(path, cfg, sources)
+            metas = res.metas
+            err_count = res.err_count
 
         if not metas:
             # 区分「搜索失败（网络/超时/源异常，重试可能成功）」与「真无匹配」
@@ -552,42 +630,55 @@ class Scraper(threading.Thread):
                     path, "manual_pending",
                     error="搜索失败（网络超时或数据源异常），可点「重新搜索」重试")
             else:
-                db.update_task_status(path, "manual_pending",
-                                      error="无匹配，待人工辅助")
+                db.update_task_status(
+                    path, "manual_pending",
+                    error="无匹配，待人工辅助（可手动搜索，或用音频指纹识别）")
             return
 
         db.add_candidates(path, [_meta_to_dict(m) for m in metas])
-        best = max(metas, key=lambda m: m.confidence)
-        threshold = float(cfg.get("threshold", "0.9"))
-        # 现有打分是 0~100 制（满分 90），归一化到 0~1 再与阈值比较
-        score01 = max(0.0, min(1.0, best.confidence / 100.0))
 
-        if score01 >= threshold:
-            written_fields: list = []
-            if cfg.get("write_enabled") == "1":
-                # 定位产生最佳候选的源（跨源合并时各自 enrich/写入）
-                best_src = next((s for s in sources if getattr(s, "name", "") == best.source),
-                                sources[0] if sources else None)
-                try:
-                    # 写入前 enrich（应用层缓存版）：补全专辑艺人/流派/曲目号等
-                    if best_src is not None and hasattr(best_src, "enrich"):
-                        try:
-                            best = enrich_cached(best_src, best)
-                        except Exception:
-                            pass
-                    written_fields = _write_fields(path, best, best_src, cfg)
-                except Exception as exc:  # noqa: BLE001
-                    db.update_task_status(path, "error", error=_cn_err(exc))
-                    return
-            db.update_task_status(
-                path, "auto_ok", score=best.confidence, title=best.title,
-                artist=best.artist, album=best.album, year=best.date,
-                written=",".join(written_fields))
+        if res is not None:
+            # 第 4 步判定：必须有通过「文件名反推校验」的候选才允许自动写入。
+            # 未通过 → 进人工队列（候选列表仍保留，便于人工挑选）。
+            if not res.verified:
+                top = metas[0]
+                if res.title_only:
+                    msg = ("文件名里只有歌名、没有歌手，无法完成「歌名+歌手都出现在"
+                           "文件名中」的反推校验；请手动搜索确认，或改用指纹模式，"
+                           "待人工辅助")
+                else:
+                    msg = ("未通过文件名反推校验（结果歌名/歌手未同时出现在文件名中）；"
+                           "可手动搜索，或用音频指纹（Chromaprint+AcoustID）识别，"
+                           "待人工辅助")
+                db.update_task_status(
+                    path, "manual_pending", score=top.confidence,
+                    title=top.title, artist=top.artist, album=top.album,
+                    year=top.date, error=msg)
+                return
+            best = res.verified[0]
         else:
-            db.update_task_status(
-                path, "manual_pending", score=best.confidence, title=best.title,
-                artist=best.artist, album=best.album, year=best.date,
-                error=f"最高分 {score01:.2f} < 阈值 {threshold}")
+            best = max(metas, key=lambda m: m.confidence)
+
+        written_fields: list = []
+        if cfg.get("write_enabled") == "1":
+            # 定位产生最佳候选的源（跨源合并时各自 enrich/写入）
+            best_src = next((s for s in sources if getattr(s, "name", "") == best.source),
+                            sources[0] if sources else None)
+            try:
+                # 写入前 enrich（应用层缓存版）：补全专辑艺人/流派/曲目号等
+                if best_src is not None and hasattr(best_src, "enrich"):
+                    try:
+                        best = enrich_cached(best_src, best)
+                    except Exception:
+                        pass
+                written_fields = _write_fields(path, best, best_src, cfg)
+            except Exception as exc:  # noqa: BLE001
+                db.update_task_status(path, "error", error=_cn_err(exc))
+                return
+        db.update_task_status(
+            path, "auto_ok", score=best.confidence, title=best.title,
+            artist=best.artist, album=best.album, year=best.date,
+            written=",".join(written_fields))
 
 
 # 全局唯一调度器实例

@@ -290,8 +290,8 @@
     <div class="card">
       <h2>配置</h2>
       <div class="row">
-        <label>匹配阈值 <b id="thVal">0.9</b>（满分 1.0，≥阈值自动写入）</label>
-        <input type="range" id="threshold" min="0.5" max="1" step="0.01" value="0.9">
+        <label>匹配阈值 <b id="thVal">0.9</b>（已废弃：是否自动写入改由「文件名反推校验」判定，打分只用于候选排序）</label>
+        <input type="range" id="threshold" min="0.5" max="1" step="0.01" value="0.9" disabled>
       </div>
       <div class="row">
         <label>音乐目录</label>
@@ -743,6 +743,7 @@ async function loadPending(){
         coverHtml(c.albummid) +
         `<div class="info"><b>${esc(c.title)}</b> - ${esc(c.artist)}<br>` +
         `<span class="muted">专辑 ${esc(c.album||"-")} ｜ 年份 ${esc(c.year||"-")} ｜ ${durHtml}</span>` +
+        (c.verified?' <span class="tag" style="background:#e6f7ee;color:var(--ok)" title="结果的歌名与歌手都出现在文件名中">反推✓</span>':'') +
         ` <span class="tag" style="background:#e7f3ff;color:var(--accent)">${esc(c.source||"")}</span></div>` +
         `<span class="score">${(c.score/100).toFixed(2)}</span>` +
         `<button class="secondary" onclick="openDetail('${esc(t.path).replace(/'/g,"\\'")}','${c.songmid}')">查看/预览</button>` +
@@ -1044,6 +1045,7 @@ function renderDetailCands(){
       ${coverHtml(c.albummid)}
       <div class="info"><b>${esc(c.title)}</b> - ${esc(c.artist)}<br>
         <span class="muted">专辑 ${esc(c.album||"-")} ｜ 年份 ${esc(c.year||"-")} ｜ 时长 ${Math.floor((c.duration||0)/60)}:${String((c.duration||0)%60).padStart(2,"0")}</span>
+        ${c.verified?'<span class="tag" style="background:#e6f7ee;color:var(--ok)" title="结果的歌名与歌手都出现在文件名中">反推✓</span>':''}
         <span class="tag" style="background:#e7f3ff;color:var(--accent)">${esc(c.source||"")}</span></div>
       <span class="score">${(c.score/100).toFixed(2)}</span>
       <button class="secondary" onclick="viewCandidateFields('${esc(c.songmid).replace(/'/g,"\\'")}')">查看字段</button>
