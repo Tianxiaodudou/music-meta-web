@@ -57,13 +57,17 @@ DEFAULTS: Dict[str, str] = {
     "music_dir": "",                 # 学习/刮削目录（安装向导必填；需在应用设置中授权读取）
     "recursive": "1",
     "write_enabled": "0",            # 安全开关：默认不写入（学习模式）
-    "min_interval": "0.3",           # 请求间隔（秒）
-    "concurrency": "1",
+    # ---- 风控（限速/并发/重试/批量） ----
+    "min_interval": "0.3",           # 请求间隔（秒）：越小越快，越容易被风控
+    "concurrency": "1",              # 并发刮削的 worker 数
+    "request_timeout": "15",         # 单次网络请求超时（秒）
+    "request_retries": "2",          # 单次请求失败后的重试次数
+    "run_limit": "0",                # 单次「开始刮削」最多处理几首；0=不限
+    "pause_every": "0",              # 每处理 N 首后暂停一次；0=不暂停
+    "pause_seconds": "5",            # 上述暂停的时长（秒）
+    # ---- 目录 ----
+    "cache_dir": "",                 # 元数据缓存目录；空=应用数据目录
     "source_limit": "10",            # 每个源在候选列表显示的结果条数（1~20）
-    # 空闲自动退出（分钟）：0=关闭（默认，进程常驻不自动退出）；
-    # >0 表示连续多久没有任何网页请求且没有刮削任务在跑时，自动退出。
-    # 注意：退出后 fnOS 会把应用标记为「未运行」，需到应用中心重新启用才能打开。
-    "idle_exit_minutes": "0",
     # 匹配方式：二选一，不自动混用
     #   filename   = 按文件名匹配（候选关键词搜索 → 用搜索结果反推歌名/歌手）
     #   fingerprint= 按音频指纹识别（fpcalc → AcoustID → 回查 QQ，需 qqmusic 插件）
@@ -108,7 +112,7 @@ def init_db() -> None:
         # 清理已废弃的配置键（旧版逐个字段的 write_* 开关与 threshold，
         # 现由 active_fields 与「文件名反推校验」取代）
         c.execute("DELETE FROM config WHERE key LIKE 'write\\_%' ESCAPE '\\' "
-                  "OR key='threshold'")
+                  "OR key IN ('threshold', 'idle_exit_minutes')")
         for key, value in DEFAULTS.items():
             c.execute("INSERT OR IGNORE INTO config(key, value) VALUES(?, ?)",
                       (key, value))

@@ -90,6 +90,7 @@ start_process() {
     MMW_MUSIC_DIR="${wizard_music_dir:-}" \
     MMW_PLUGINS_DIR="${wizard_plugins_dir:-}" \
     MMW_ACOUSTID_KEY="${wizard_acoustid_key:-}" \
+    MMW_CACHE_DIR="${wizard_cache_dir:-}" \
     run_as_user nohup "${VENV_DIR}/bin/python" "${DEST_DIR}/server/run_server.py" "${SOCK_FILE}" \
         >> "${LOG_FILE}" 2>&1 &
     printf "%s" "$!" > "${PID_FILE}"

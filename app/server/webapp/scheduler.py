@@ -75,14 +75,28 @@ def _rank_key(m: SongMeta):
     return (1 if _verified(m) else 0, float(m.confidence or 0.0), filled)
 
 
+def _source_kwargs(cfg: dict) -> dict:
+    """数据源插件实例化参数（风控设置）：间隔 / 超时 / 重试次数。"""
+    return {"min_interval": float(cfg.get("min_interval", "0.3") or 0.3),
+            "timeout": int(float(cfg.get("request_timeout", "15") or 15)),
+            "retries": int(float(cfg.get("request_retries", "2") or 0))}
+
+
 def resolve_sources(cfg: dict) -> list:
-    """按配置勾选的源建立独立实例（各自限速；插件未安装则跳过）。"""
+    """按配置勾选的源建立独立实例（各自限速；插件未安装则跳过）。
+
+    风控参数（间隔/超时/重试）通过 kwargs 传给插件；不接受这些参数的插件
+    自动退回只传 min_interval（插件写 __init__(self, min_interval, **kwargs) 即可兼容）。
+    """
     names = [n.strip() for n in cfg.get("source", "").split(",") if n.strip()]
+    kwargs = _source_kwargs(cfg)
     sources = []
     for n in names:
         try:
-            sources.append(get_source(
-                n, min_interval=float(cfg.get("min_interval", "0.3"))))
+            try:
+                sources.append(get_source(n, **kwargs))
+            except TypeError:
+                sources.append(get_source(n, min_interval=kwargs["min_interval"]))
         except Exception as exc:  # noqa: BLE001
             print(f"[scheduler] 元数据源 {n} 不可用（插件未安装？）: {exc}")
     return sources
@@ -519,6 +533,9 @@ class Scraper(threading.Thread):
         self.error: Optional[str] = None
         # 限定只处理这些路径（用于"只刮错误/待人工队列里的那几首"）；None=全部
         self.scope: Optional[set] = scope
+        self.max_tasks: int = 0          # 单次运行最多处理几首（0=不限）
+        self._done: int = 0              # 已处理计数（多 worker 共享）
+        self._done_lock = threading.Lock()
 
     def stop(self) -> None:
         self._stop_flag.set()
@@ -529,6 +546,12 @@ class Scraper(threading.Thread):
             cfg = db.get_config()
             db.recover_stale_processing()  # 上次崩溃残留的 processing 恢复为 pending
             workers = max(1, int(cfg.get("concurrency", "1")))
+            # 单次运行上限（0=不限）：所有 worker 共用，避免一次跑太久被风控
+            self.max_tasks = max(0, int(float(cfg.get("run_limit", "0") or 0)))
+            self._done = 0
+            # 每处理 N 首暂停 X 秒（风控：避免长时间持续请求）
+            self._pause_every = max(0, int(float(cfg.get("pause_every", "0") or 0)))
+            self._pause_seconds = max(0.0, float(cfg.get("pause_seconds", "5") or 0))
             pool = [threading.Thread(target=self._worker, args=(cfg,),
                                      daemon=True) for _ in range(workers)]
             for t in pool:
@@ -560,6 +583,9 @@ class Scraper(threading.Thread):
             if task is None:
                 return
             path = task["path"]
+            if self._limit_reached():
+                db.update_task_status(path, "pending")   # 超出本次上限：放回队列
+                return
             # 已人工处理过的音乐（永久记忆哈希）→ 刮削时排除
             try:
                 if db.is_manual_done(path):
@@ -571,8 +597,25 @@ class Scraper(threading.Thread):
                 pass
             try:
                 self._process(path, sources, cfg)
-            except Exception as exc:  # noqa: BLE001
-                db.update_task_status(path, "error", error=_cn_err(exc))
+            finally:
+                with self._done_lock:
+                    self._done += 1
+                    done_now = self._done
+            if self._limit_reached():
+                return
+            # 每 N 首停一会儿：请求节奏被打断，降低被风控的概率
+            if self._pause_every and done_now % self._pause_every == 0 \
+                    and self._pause_seconds > 0 and not self._stop_flag.is_set():
+                print(f"[scheduler] 已处理 {done_now} 首，按风控设置暂停 "
+                      f"{self._pause_seconds:g} 秒…")
+                self._stop_flag.wait(self._pause_seconds)
+
+    def _limit_reached(self) -> bool:
+        """本次运行是否已达到「单次运行上限」。"""
+        if not getattr(self, "max_tasks", 0):
+            return False
+        with self._done_lock:
+            return self._done >= self.max_tasks
 
     # ---------------- 单文件处理 ----------------
 

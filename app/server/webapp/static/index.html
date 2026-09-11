@@ -25,10 +25,17 @@
   .topbar .actions { display:flex; flex-wrap:wrap; gap:6px; }
   .running { font-size:12px; color:#999; }
   /* 右上角齿轮：全局设置入口 */
-  .gear { margin-left:auto; background:#fff; color:#555; border:1px solid #d5d9de;
-          font-size:20px; line-height:1; padding:5px 11px; border-radius:50%; }
-  .gear:hover { color:var(--accent); border-color:var(--accent); }
-  .gear.on { color:var(--accent); border-color:var(--accent); background:#eaf4ff; }
+  .gear { margin-left:auto; display:inline-flex; align-items:center; gap:6px;
+          background:#fff; color:#44506b; border:1px solid #d5d9de; border-radius:9px;
+          font-size:13.5px; font-weight:600; padding:6px 13px 6px 10px; cursor:pointer;
+          transition:all .15s ease; }
+  .gear svg { width:17px; height:17px; flex-shrink:0; }
+  .gear:hover { color:#fff; background:var(--accent); border-color:var(--accent);
+                box-shadow:0 2px 8px rgba(29,155,240,.35); }
+  .gear:hover svg { animation:gearshow .6s ease; }
+  .gear.on { color:#fff; background:var(--accent); border-color:var(--accent); }
+  @keyframes gearshow { from { transform:rotate(0) } to { transform:rotate(120deg) } }
+  .gear .gtxt { line-height:1; }
   main { max-width:1180px; margin:16px auto; padding:0 16px; }
   .page { display:none; }
   .page.active { display:block; }
@@ -110,6 +117,9 @@
   .cand-menu .cm-val.url { font-size:11.5px; color:#666; word-break:break-all; }
   .sr-candwrap { display:flex; align-items:center; gap:8px; width:100%; }
   .sr-candthumb { width:44px; height:44px; border-radius:4px; object-fit:cover; background:#eee; flex-shrink:0; }
+  /* 「原有」封面的缩略图：窗口里只看个大概，别铺成大图 */
+  .scrub-row img.sr-thumb { width:40px; height:40px; border-radius:4px; object-fit:cover;
+                            background:#eee; flex-shrink:0; cursor:zoom-in; }
   .cand-menu .cm-item { display:flex; flex-direction:column; gap:2px; padding:6px 9px; border-radius:5px; cursor:pointer; }
   .cand-menu .cm-item:hover { background:#eef6ff; }
   .cand-menu .cm-val { font-size:13px; word-break:break-all; }
@@ -148,6 +158,13 @@
   .modal.open { display:flex; }
   .modal-box { background:#fff; border-radius:10px; padding:16px 20px; width:min(900px,96vw); }
   .modal-box h3 { margin:0 0 10px; font-size:15px; }
+  /* 设置弹窗里的单个选项块 */
+  .opt { border:1px solid #e6e9ee; border-radius:8px; padding:10px 12px; margin:9px 0; background:#fbfcfd; }
+  .opt .opt-h { display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-size:13.5px; }
+  .opt .opt-h code { background:#eef2f7; border-radius:4px; padding:1px 6px; font-size:12px; color:#44506b; }
+  .opt .opt-d { font-size:12px; color:#777; line-height:1.75; margin-top:6px; }
+  .opt .opt-d code { background:#f3f5f8; border-radius:3px; padding:1px 5px; font-size:11.5px; word-break:break-all; }
+  .opt input[type=number] { margin-top:6px; }
   #msg { position:fixed; right:16px; top:64px; background:#333; color:#fff; padding:10px 16px;
          border-radius:6px; display:none; z-index:300; }
 
@@ -204,7 +221,13 @@
   <div class="row1">
     <h1>🎵 音乐数据刮削</h1>
     <span class="running" id="runState"></span>
-    <button class="gear" id="gearBtn" onclick="showPage('config')" title="设置">⚙</button>
+    <button class="gear" id="gearBtn" onclick="showPage('config')" title="设置">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="3.2"></circle>
+        <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.56V21a2 2 0 1 1-4 0v-.11a1.7 1.7 0 0 0-1.11-1.56 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 3.6 15a1.7 1.7 0 0 0-1.56-1H2a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 3.6 8.9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 8 4.6h.09A1.7 1.7 0 0 0 9.6 3V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9V9a1.7 1.7 0 0 0 1.56 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.51 1z"></path>
+      </svg><span class="gtxt">设置</span>
+    </button>
   </div>
   <div class="actions">
     <button onclick="scan()">① 扫描目录</button>
@@ -263,27 +286,14 @@
       </div>
 
       <div class="row">
-        <label>音乐目录</label>
-        <input type="text" id="music_dir" style="width:380px">
-        <label><input type="checkbox" id="recursive" checked> 递归子目录</label>
+        <label><b>风控设置</b>（请求间隔 / 并发 / 超时 / 重试 / 单次上限）</label>
+        <button class="secondary" onclick="openRisk()">⚙ 打开风控设置</button>
+        <span class="muted" id="riskSummary"></span>
       </div>
       <div class="row">
-        <label>请求间隔（秒）</label>
-        <input type="number" id="min_interval" value="0.3" min="0.1" step="0.05" style="width:90px">
-        <label>并发数</label>
-        <input type="number" id="concurrency" value="1" min="1" max="8" style="width:70px">
-        <label>每源候选数</label>
-        <input type="number" id="source_limit" value="10" min="1" max="20" style="width:70px">
-        <label class="muted">（手动刮削每个源取几条候选，默认 10）</label>
-      </div>
-      <div class="row">
-        <label><input type="checkbox" id="idle_exit_enable" onchange="toggleIdleExit()"> <b>空闲自动退出</b></label>
-        <input type="number" id="idle_exit_minutes" value="30" min="1" step="5" style="width:80px" disabled>
-        <label class="muted">分钟无操作后自动停止后台进程</label>
-        <button class="secondary" onclick="$('idle_exit_enable').checked=false;toggleIdleExit()" id="idle_off_btn" style="display:none">关闭</button>
-      </div>
-      <div class="row" style="margin-top:-4px">
-        <label class="muted" style="color:var(--warn)">⚠ 开启后：长时间无人使用（且无刮削任务）会自动退出进程释放资源。退出后 fnOS 会显示应用「未运行」，需要到<b>应用中心 → 音乐数据刮削 → 启用</b>才能再次打开。默认关闭（进程常驻，不自动退出）。</label>
+        <label><b>目录设置</b>（音乐库 / 插件 / 元数据缓存）</label>
+        <button class="secondary" onclick="openDirs()">📁 打开目录设置</button>
+        <span class="muted" id="dirsSummary"></span>
       </div>
       <div class="row">
         <label><b>元数据源</b>（勾选可用的源，手动刮削按这里取候选）</label>
@@ -295,11 +305,6 @@
           </div>
         </div>
         <span class="muted" id="srcSummary"></span>
-      </div>
-      <div class="row">
-        <label>插件目录</label>
-        <input type="text" id="plugins_dir" style="width:380px">
-        <label class="muted" id="plugins_dir_hint"></label>
       </div>
       <div class="row">
         <label><b>匹配方式（二选一）</b></label>
@@ -388,6 +393,114 @@
         </div>
         <textarea id="scLrcCand" placeholder="点「手动刮削」从候选里选一个，或直接粘贴歌词后写入"></textarea>
       </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ======= 风控设置弹窗 ======= -->
+<div class="modal" id="riskModal">
+  <div class="modal-box" style="width:min(760px,96vw)">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <h3 style="margin:0">风控设置</h3>
+      <button class="secondary" onclick="closeRisk()">关闭</button>
+    </div>
+    <p class="muted" style="line-height:1.7;margin:8px 0 4px">
+      数据源都是第三方公开接口，请求过密会被限流甚至临时封禁。下面每一项都影响「速度 ↔ 风险」的取舍：
+      默认值偏保守，批量刮几百首建议保持默认；只在明确知道自己在做什么时再调低间隔 / 调高并发。
+    </p>
+    <div class="opt">
+      <div class="opt-h"><b>请求间隔（秒）</b><code id="min_interval_v">0.3</code></div>
+      <input type="number" id="min_interval" min="0.1" step="0.05" style="width:110px">
+      <div class="opt-d">同一数据源两次网络请求之间的最小间隔（带随机抖动）。
+        <b>调大</b>：更安全、更慢；<b>调小</b>：更快、更容易触发风控。建议 ≥ 0.3。</div>
+    </div>
+    <div class="opt">
+      <div class="opt-h"><b>并发数</b><code id="concurrency_v">1</code></div>
+      <input type="number" id="concurrency" min="1" max="8" style="width:110px">
+      <div class="opt-d">同时刮削几个文件（后台 worker 数）。1 = 一首一首来，最稳；
+        调大能提速，但请求会成倍变密，且同一首歌的日志会交错。建议 1～2。</div>
+    </div>
+    <div class="opt">
+      <div class="opt-h"><b>每源候选数</b><code id="source_limit_v">10</code></div>
+      <input type="number" id="source_limit" min="1" max="20" style="width:110px">
+      <div class="opt-d">每个数据源为每首歌返回多少条候选（手动刮削窗口里下拉能看到的就是这些）。
+        只影响「拿到多少候选」，不额外多发请求；但条数越多，本地排序/展示越慢。默认 10。</div>
+    </div>
+    <div class="opt">
+      <div class="opt-h"><b>请求超时（秒）</b><code id="request_timeout_v">15</code></div>
+      <input type="number" id="request_timeout" min="3" max="120" style="width:110px">
+      <div class="opt-d">单次网络请求最多等多久。<b>调太短</b>会把慢响应直接算作失败（然后重试，反而更费力）；
+        <b>调大</b>遇到卡住的接口会等更久。默认 15 秒。<br>
+        适用范围：<b>支持该参数的插件</b>（如 qqmusic）；其它插件用自身内置默认值（15 秒）。</div>
+    </div>
+    <div class="opt">
+      <div class="opt-h"><b>失败重试次数</b><code id="request_retries_v">2</code></div>
+      <input type="number" id="request_retries" min="0" max="5" style="width:110px">
+      <div class="opt-d">一次请求失败（超时 / 风控 / 5xx）后自动重试几次，重试间隔按 2 倍指数退避。
+        0 = 不重试（更快但更容易漏掉网络抖动的歌）。默认 2。<br>
+        适用范围：同「请求超时」，只对支持该参数的插件生效（如 qqmusic）。</div>
+    </div>
+    <div class="opt">
+      <div class="opt-h"><b>单次运行上限（首）</b><code id="run_limit_v">0</code></div>
+      <input type="number" id="run_limit" min="0" step="10" style="width:110px">
+      <div class="opt-d">每点一次「开始刮削」最多处理多少首，处理完自动停下（任务保留在队列，下次继续）。
+        0 = 不限（一次跑完整个队列）。<b>大批量建议设 200～500</b>，分段跑更不容易被风控，也方便中途检查效果。</div>
+    </div>
+    <div class="opt">
+      <div class="opt-h"><b>每处理几首暂停一次</b><code id="pause_every_v">0</code></div>
+      <input type="number" id="pause_every" min="0" step="10" style="width:110px">
+      <div class="opt-d">每刮完这么多首就整体停一会儿再继续。<b>0 = 不暂停</b>。
+        大规模刮削（几千首）时，持续不断的请求最容易触发风控；
+        设成 50～100 首歇一次，能明显降低被限流的概率，代价只是整体慢一点。<br>
+        这一项是<b>应用层</b>控制，对所有数据源都生效。</div>
+    </div>
+    <div class="opt">
+      <div class="opt-h"><b>暂停时长（秒）</b><code id="pause_seconds_v">5</code></div>
+      <input type="number" id="pause_seconds" min="1" step="5" style="width:110px">
+      <div class="opt-d">上面那次暂停休息多久。太短起不到作用，太长会拖慢整体进度；
+        一般 5～30 秒即可（配合「每 100 首」大概相当于每首多花 0.05～0.3 秒）。</div>
+    </div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px">
+      <button class="secondary" onclick="closeRisk()">取消</button>
+      <button class="ok" onclick="saveRisk()">保存风控设置</button>
+    </div>
+  </div>
+</div>
+
+<!-- ======= 目录设置弹窗 ======= -->
+<div class="modal" id="dirsModal">
+  <div class="modal-box" style="width:min(760px,96vw)">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <h3 style="margin:0">目录设置</h3>
+      <button class="secondary" onclick="closeDirs()">关闭</button>
+    </div>
+    <p class="muted" style="line-height:1.7;margin:8px 0 4px">
+      路径都要写容器/系统里的绝对路径（以 <code>/vol…</code> 开头）。
+      真正的读写权限还要在「应用中心 → 音乐数据刮削 → 设置 → 授权目录」里授权，否则会出现只读或无权访问。
+    </p>
+    <div class="opt">
+      <div class="opt-h"><b>音乐库目录</b><span class="muted">刮削对象所在目录（必填）</span></div>
+      <input type="text" id="music_dir" placeholder="例如 /vol2/1000/音频库" style="width:100%">
+      <label style="margin-top:6px;display:inline-block"><input type="checkbox" id="recursive" checked> 递归扫描子目录</label>
+      <div class="opt-d">扫描这里的所有音频文件（flac/mp3/ogg/ape）。授权后本应用才会读写其中的标签。</div>
+    </div>
+    <div class="opt">
+      <div class="opt-h"><b>数据源插件目录</b><span class="muted">存放 *.py 数据源插件</span></div>
+      <input type="text" id="plugins_dir" placeholder="留空=应用数据目录 plugins/" style="width:100%">
+      <div class="opt-d" id="plugins_dir_hint">把 qqmusic.py / netease.py 等单文件插件放这里，重启应用后在「元数据源」里勾选。</div>
+    </div>
+    <div class="opt">
+      <div class="opt-h"><b>元数据缓存目录</b><span class="muted">歌曲/专辑/封面/歌词的本地缓存</span></div>
+      <input type="text" id="cache_dir" placeholder="留空=应用数据目录（推荐）" style="width:100%">
+      <div class="opt-d">刮削结果（搜索、专辑详情、封面、歌词）都缓存在这里的 SQLite 里，
+        命中缓存就不再请求服务器 —— 换目录等于清空缓存、下次会重新联网抓一遍。
+        当前实际使用：<code id="cache_db_show">—</code><br>
+        应用数据目录（由系统分配，存配置与任务库）：<code id="data_dir_show">—</code></div>
+    </div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px">
+      <button class="secondary" onclick="closeDirs()">取消</button>
+      <button class="ok" onclick="saveDirs()">保存目录设置</button>
     </div>
   </div>
 </div>
@@ -1050,6 +1163,77 @@ async function writeAuto(){
   }catch(e){ msg("补写入失败：" + (e.message||e)); }
 }
 
+// ---------------- 风控设置 / 目录设置（设置页的两个弹窗） ----------------
+function updateRiskSummary(){
+  const parts = [
+    `间隔 ${$("min_interval").value || "-"}s`,
+    `并发 ${$("concurrency").value || "-"}`,
+    `候选 ${$("source_limit").value || "-"}/源`,
+    `超时 ${$("request_timeout").value || "-"}s`,
+    `重试 ${$("request_retries").value || "-"}`,
+  ];
+  const lim = parseInt($("run_limit").value || "0", 10);
+  parts.push(lim > 0 ? `单次上限 ${lim} 首` : "单次不限");
+  const pe = parseInt($("pause_every").value || "0", 10);
+  parts.push(pe > 0 ? `每 ${pe} 首歇 ${$("pause_seconds").value || 0}s` : "不歇");
+  $("riskSummary").textContent = "当前：" + parts.join(" · ");
+}
+function syncRiskHint(){
+  for(const k of ["min_interval","concurrency","source_limit","request_timeout",
+                  "request_retries","run_limit","pause_every","pause_seconds"]){
+    const hint = $(k + "_v");
+    if(hint) hint.textContent = $(k).value || "-";
+  }
+}
+function openRisk(){ syncRiskHint(); updateRiskSummary();
+  $("riskModal").classList.add("open"); document.body.style.overflow = "hidden"; }
+function closeRisk(){ $("riskModal").classList.remove("open"); document.body.style.overflow = ""; }
+async function saveRisk(){
+  try{
+    await api("/api/config", {method:"PUT", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({
+        min_interval: parseFloat($("min_interval").value) || 0.3,
+        concurrency: parseInt($("concurrency").value) || 1,
+        source_limit: parseInt($("source_limit").value) || 10,
+        request_timeout: parseInt($("request_timeout").value) || 15,
+        request_retries: parseInt($("request_retries").value) || 0,
+        run_limit: parseInt($("run_limit").value) || 0,
+        pause_every: parseInt($("pause_every").value) || 0,
+        pause_seconds: parseInt($("pause_seconds").value) || 5,
+      })});
+    updateRiskSummary(); syncRiskHint();
+    msg("风控设置已保存"); closeRisk();
+  }catch(e){ msg("保存失败：" + (e.message||e)); }
+}
+
+function updateDirsSummary(){
+  const lib = ($("music_dir").value || "").trim();
+  const plug = ($("plugins_dir").value || "").trim();
+  const cache = ($("cache_dir").value || "").trim();
+  $("dirsSummary").textContent =
+    `音乐库 ${lib || "（未设置）"} · 插件 ${plug || "应用数据目录"} · 缓存 ${cache || "应用数据目录"}`;
+}
+function openDirs(){ updateDirsSummary();
+  $("dirsModal").classList.add("open"); document.body.style.overflow = "hidden"; }
+function closeDirs(){ $("dirsModal").classList.remove("open"); document.body.style.overflow = ""; }
+async function saveDirs(){
+  const lib = ($("music_dir").value || "").trim();
+  if(!lib){ msg("音乐库目录不能为空"); return; }
+  try{
+    await api("/api/config", {method:"PUT", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({
+        music_dir: lib,
+        recursive: $("recursive").checked,
+        plugins_dir: ($("plugins_dir").value || "").trim(),
+        cache_dir: ($("cache_dir").value || "").trim(),
+      })});
+    updateDirsSummary();
+    msg("目录设置已保存（缓存目录变更会立即生效）");
+    closeDirs();
+    await loadConfig();
+  }catch(e){ msg("保存失败：" + (e.message||e)); }
+}
+
 // ---------------- 设置 ----------------
 async function loadConfig(){
   try{
@@ -1060,13 +1244,21 @@ async function loadConfig(){
     $("music_dir").value = c.music_dir || "";
     $("recursive").checked = c.recursive === "1";
     $("write_enabled").checked = c.write_enabled === "1";
+    // 风控设置（弹窗内）
     $("min_interval").value = c.min_interval || "0.3";
     $("concurrency").value = c.concurrency || "1";
     $("source_limit").value = c.source_limit || "10";
-    const idleMin = parseInt(c.idle_exit_minutes) || 0;
-    $("idle_exit_enable").checked = idleMin > 0;
-    $("idle_exit_minutes").value = idleMin > 0 ? idleMin : 30;
-    toggleIdleExit();
+    $("request_timeout").value = c.request_timeout || "15";
+    $("request_retries").value = c.request_retries || "2";
+    $("run_limit").value = c.run_limit || "0";
+    $("pause_every").value = c.pause_every || "0";
+    $("pause_seconds").value = c.pause_seconds || "5";
+    updateRiskSummary();
+    // 目录设置（弹窗内）
+    $("cache_dir").value = c.cache_dir || "";
+    $("cache_db_show").textContent = c.cache_db || "（未初始化）";
+    $("data_dir_show").textContent = c.data_dir || "（由系统分配）";
+    updateDirsSummary();
     const mode = c.matching_mode === "fingerprint" ? "fingerprint" : "filename";
     const radio = document.querySelector(`input[name="matching_mode"][value="${mode}"]`);
     if(radio) radio.checked = true;
@@ -1084,7 +1276,9 @@ async function loadConfig(){
     $("srcHint").innerHTML = s.plugins_dir
       ? "当前插件目录：" + esc(s.plugins_dir) : "";
     updateSourceSummary();
-    if(s.plugins_dir) $("plugins_dir_hint").textContent = "当前插件目录：" + s.plugins_dir;
+    $("plugins_dir_hint").textContent = s.plugins_dir
+      ? ("当前生效：" + s.plugins_dir + "（把插件 .py 放这里，重启应用后勾选）")
+      : "留空=应用数据目录 plugins/（把插件 .py 放这里，重启应用后勾选）";
   }catch(e){ msg("读取配置失败：" + (e.message||e)); }
 }
 function renderFieldChecks(){
@@ -1124,11 +1318,6 @@ function updateSourceSummary(){
     ? `已选：${names.join("、")}` : "未选择任何数据源（无法刮削）";
 }
 
-function toggleIdleExit(){
-  const on = $("idle_exit_enable").checked;
-  $("idle_exit_minutes").disabled = !on;
-  $("idle_off_btn").style.display = on ? "inline-block" : "none";
-}
 async function saveConfig(){
   try{
     const body = {
@@ -1139,7 +1328,12 @@ async function saveConfig(){
       min_interval: parseFloat($("min_interval").value) || 0.3,
       concurrency: parseInt($("concurrency").value) || 1,
       source_limit: parseInt($("source_limit").value) || 10,
-      idle_exit_minutes: $("idle_exit_enable").checked ? (parseInt($("idle_exit_minutes").value) || 30) : 0,
+      request_timeout: parseInt($("request_timeout").value) || 15,
+      request_retries: parseInt($("request_retries").value) || 0,
+      run_limit: parseInt($("run_limit").value) || 0,
+      pause_every: parseInt($("pause_every").value) || 0,
+      pause_seconds: parseInt($("pause_seconds").value) || 5,
+      cache_dir: ($("cache_dir").value || "").trim(),
       matching_mode: (document.querySelector('input[name="matching_mode"]:checked') || {}).value || "filename",
       acoustid_key: $("acoustid_key").value.trim(),
       source: Array.from(document.querySelectorAll('#source_checks input:checked')).map(x=>x.value).join(","),
@@ -1148,6 +1342,7 @@ async function saveConfig(){
     await api("/api/config", {method:"PUT", headers:{"Content-Type":"application/json"},
                               body: JSON.stringify(body)});
     msg("配置已保存");
+    updateRiskSummary(); updateDirsSummary();
     await loadConfig();
   }catch(e){ msg("保存失败：" + (e.message||e)); }
 }
@@ -1169,6 +1364,11 @@ async function poll(){
     await loadStats();
     if(!busyUI()) await loadQueue();
   }catch(e){}
+}
+for(const k of ["min_interval","concurrency","source_limit","request_timeout",
+                "request_retries","run_limit","pause_every","pause_seconds"]){
+  const el = $(k);
+  if(el) el.addEventListener("input", () => { syncRiskHint(); updateRiskSummary(); });
 }
 setInterval(poll, 5000);
 (async function init(){

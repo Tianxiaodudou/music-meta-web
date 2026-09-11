@@ -62,6 +62,8 @@ async def strip_gateway_prefix(request, call_next):
 @app.on_event("startup")
 def _startup() -> None:
     db.init_db()
+    # 元数据缓存目录：优先用配置里指定的目录（空则用应用数据目录）
+    _apply_cache_dir(db.get_config())
     # 通用元数据缓存初始化：首次启动自动迁移旧版 QQ 缓存库
     try:
         from musicmeta import cache as _mcache
@@ -91,7 +93,12 @@ class ConfigBody(BaseModel):
     min_interval: float | None = None
     concurrency: int | None = None
     source_limit: int | None = None
-    idle_exit_minutes: int | None = None   # 空闲自动退出分钟数；0=关闭（进程常驻）
+    request_timeout: int | None = None
+    request_retries: int | None = None
+    run_limit: int | None = None
+    pause_every: int | None = None
+    pause_seconds: int | None = None
+    cache_dir: str | None = None
     matching_mode: str | None = None
     acoustid_key: str | None = None
     source: str | None = None
@@ -102,6 +109,13 @@ class ConfigBody(BaseModel):
 def get_config():
     cfg = db.get_config()
     cfg["active_fields"] = ",".join(active_fields(cfg))
+    # 只读信息：应用数据目录 / 元数据缓存实际落盘位置（供「目录设置」展示）
+    from musicmeta import cache as _mcache
+    cfg["data_dir"] = (os.environ.get("TRIM_PKGVAR") or "").strip()
+    try:
+        cfg["cache_db"] = _mcache.stats().get("db", "")
+    except Exception:
+        cfg["cache_db"] = ""
     return cfg
 
 
@@ -134,7 +148,19 @@ def put_config(body: ConfigBody):
             patch[name] = ",".join(parse_active(val))
         else:
             patch[name] = str(val)
-    return db.set_config(patch)
+    cfg = db.set_config(patch)
+    if "cache_dir" in patch:
+        _apply_cache_dir(cfg)
+    return cfg
+
+
+def _apply_cache_dir(cfg: dict) -> None:
+    """让「元数据缓存目录」配置生效（切目录后自动重开缓存库）。"""
+    from musicmeta import cache as _mcache
+    try:
+        _mcache.set_dir(cfg.get("cache_dir", ""))
+    except Exception as exc:  # noqa: BLE001
+        print(f"[config] 切换缓存目录失败（保持原目录）: {exc}")
 
 
 # ---------------- 任务 ----------------

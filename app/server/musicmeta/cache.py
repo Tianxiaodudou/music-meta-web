@@ -202,6 +202,28 @@ def _migrate_legacy_qq() -> None:
         pass
 
 
+def set_dir(path: str) -> None:
+    """切换缓存目录（由应用配置 cache_dir 驱动）：重开连接，失败则降级为内存。
+
+    传空串表示回到默认（TRIM_PKGVAR 应用数据目录）。
+    """
+    global _conn, _mem_only
+    path = (path or "").strip()
+    if path:
+        os.environ["MMW_CACHE_DIR"] = path
+    else:
+        os.environ.pop("MMW_CACHE_DIR", None)
+    with _lock:
+        if _conn is not None:
+            try:
+                _conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+        _conn = None
+        _mem_only = False
+        _init()
+
+
 def init() -> None:
     """应用启动时调用一次：初始化并迁移旧缓存库。"""
     _init()

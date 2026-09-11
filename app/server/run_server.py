@@ -5,7 +5,7 @@
 环境:
 - MMW_DB             SQLite 路径（由 cmd/main 注入 $TRIM_PKGVAR/app.db）
 - MMW_PLUGINS_DIR    数据源插件目录（安装向导 wizard_plugins_dir，cmd/main 转发）
-- MMW_MUSIC_DIR / MMW_ACOUSTID_KEY
+- MMW_MUSIC_DIR / MMW_ACOUSTID_KEY / MMW_CACHE_DIR
                      安装向导 music_dir / acoustid_key（cmd/main 转发，首次启动写入配置）
 
 本安装包不内置任何数据源：所有源从插件目录加载（单文件 .py）。
@@ -145,6 +145,7 @@ def _apply_wizard_env() -> None:
         "MMW_MUSIC_DIR": "music_dir",
         "MMW_PLUGINS_DIR": "plugins_dir",
         "MMW_ACOUSTID_KEY": "acoustid_key",
+        "MMW_CACHE_DIR": "cache_dir",
     }
     try:
         from webapp import db
@@ -187,46 +188,6 @@ def _stale_pids(sock_file: str) -> list:
     return pids
 
 
-def _idle_exit_watchdog() -> None:
-    """空闲自动退出：无 HTTP 请求超过 idle_exit_minutes 分钟且调度器空闲 → 退出进程。
-
-    背景：本应用是 fnOS 服务型应用，安装后由 cmd/main start 常驻；
-    用户不打开网页时进程仍在后台占用内存。此守护线程在长时间无人使用时
-    自行退出，释放资源。配置 idle_exit_minutes=0 可关闭（进程常驻）。
-    再次打开网页时 fnOS 应用中心会通过 cmd/main start 重新拉起。
-    """
-    import time
-    try:
-        from webapp import db, scheduler
-        from webapp.main import _last_request_ts
-    except Exception:  # noqa: BLE001
-        return
-    while True:
-        time.sleep(60)   # 每分钟检查一次
-        try:
-            cfg = db.get_config()
-            minutes = float((cfg.get("idle_exit_minutes") or "0").strip() or "0")
-        except Exception:  # noqa: BLE001
-            continue
-        if minutes <= 0:
-            continue
-        if scheduler.is_running():
-            continue   # 有刮削任务时不退出
-        idle_sec = time.time() - _last_request_ts
-        if idle_sec > minutes * 60:
-            print(f"[run_server] 已空闲 {int(idle_sec)} 秒（阈值 {minutes} 分钟），"
-                  f"按配置自动停止。应用将显示为「未运行」，"
-                  f"再次使用需到应用中心点「启用」。", flush=True)
-            # 清理 socket 后退出（退出码 0）。进程退出后 cmd/main 的
-            # status 会因进程不存在而清理 pid 文件；下次打开时应用中心重新 start。
-            try:
-                if os.path.exists(SOCK):
-                    os.unlink(SOCK)
-            except OSError:
-                pass
-            os._exit(0)
-
-
 def main() -> None:
     import signal
     import time
@@ -256,9 +217,6 @@ def main() -> None:
         except OSError:
             pass
     # 空闲自动退出守护线程（daemon，随主进程结束）
-    _idle_exit_watchdog_thread = threading.Thread(
-        target=_idle_exit_watchdog, daemon=True)
-    _idle_exit_watchdog_thread.start()
     uvicorn.run("webapp.main:app", uds=SOCK, log_level="info")
 
 

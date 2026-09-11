@@ -23,6 +23,15 @@
         ]
       },
       {
+        "type": "text",
+        "field": "wizard_cache_dir",
+        "label": "元数据缓存目录（可选，留空=应用数据目录）",
+        "placeholder": "例如 /vol1/@appdata/music-meta-web",
+        "rules": [
+          { "pattern": "^$|^/.*", "message": "要么留空，要么填以 / 开头的绝对路径" }
+        ]
+      },
+      {
         "type": "tips",
         "helpText": "音乐目录与插件目录的实际读写权限，请在「应用中心 → 本应用 → 设置 → 授权目录」中授权相应路径。修改后保存会自动重启应用生效。"
       }
