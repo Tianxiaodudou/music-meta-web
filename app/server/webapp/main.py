@@ -757,6 +757,31 @@ def embedded_cover(file: str):
                     headers={"Cache-Control": "no-store"})
 
 
+class CacheMergeBody(BaseModel):
+    path: str
+
+
+@app.post("/api/cache/merge")
+def cache_merge(body: CacheMergeBody):
+    """把另一个元数据缓存库合并进当前缓存目录。
+
+    换过「元数据缓存目录」后，可以用它把旧目录的缓存继承过来，避免重新联网抓一遍。
+    同 key 保留 expire 更大的那条（即较新的数据胜出）。
+    """
+    path = (body.path or "").strip()
+    if not path:
+        raise HTTPException(400, "请填写要合并的缓存库路径")
+    if not os.path.isfile(path):
+        raise HTTPException(400, f"缓存库不存在：{path}")
+    from musicmeta import cache as _mcache
+    try:
+        r = _mcache.merge_from(path)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, f"合并失败：{exc}")
+    print(f"[cache] 合并缓存 {path} → {r}")
+    return r
+
+
 @app.get("/api/health")
 def health():
     return {"ok": True, "app": "music-meta-web"}

@@ -529,6 +529,13 @@
         命中缓存就不再请求服务器 —— 换目录等于清空缓存、下次会重新联网抓一遍。
         当前实际使用：<code id="cache_db_show">—</code><br>
         应用数据目录（由系统分配，存配置与任务库）：<code id="data_dir_show">—</code></div>
+      <div class="row" style="margin-top:8px">
+        <input type="text" id="merge_src" placeholder="要合并的旧缓存库路径（例如应用数据目录下的 musicmeta_cache.db）"
+               style="flex:1;min-width:240px">
+        <button class="secondary" onclick="mergeCache()">合并到当前缓存</button>
+      </div>
+      <div class="opt-d">换缓存目录后，可把旧目录的缓存合并进来，省去重新联网抓取；
+        同一首歌的缓存以「更晚过期」的那份为准。</div>
     </div>
     <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px">
       <button class="secondary" onclick="closeDirs()">取消</button>
@@ -1349,6 +1356,15 @@ function updateDirsSummary(){
   $("dirsSummary").textContent =
     `音乐库 ${lib || "（未设置）"} · 插件 ${plug || "应用数据目录"} · 缓存 ${cache || "应用数据目录"}`;
 }
+async function mergeCache(){
+  const src = ($("merge_src").value || "").trim();
+  if(!src){ msg("请先填写要合并的旧缓存库路径"); return; }
+  if(!confirm("把\n" + src + "\n合并进当前缓存目录？\n（不会修改旧库，重复键保留较新的那份）")) return;
+  try{
+    const r = await jsonPost("/api/cache/merge", {path: src});
+    msg(`合并完成：旧库 ${r.source_rows} 条 → 当前缓存 ${r.before} → ${r.after} 条（新增 ${r.merged}）`);
+  }catch(e){ msg("合并失败：" + (e.message||e)); }
+}
 function openDirs(){ updateDirsSummary();
   $("dirsModal").classList.add("open"); document.body.style.overflow = "hidden"; }
 function closeDirs(){ $("dirsModal").classList.remove("open"); document.body.style.overflow = ""; }
@@ -1394,6 +1410,9 @@ async function loadConfig(){
     $("cache_dir").value = c.cache_dir || "";
     $("cache_db_show").textContent = c.cache_db || "（未初始化）";
     $("data_dir_show").textContent = c.data_dir || "（由系统分配）";
+    if(!$("merge_src").value && c.data_dir){
+      $("merge_src").value = c.data_dir.replace(/\/+$/, "") + "/musicmeta_cache.db";
+    }
     updateDirsSummary();
     const mode = c.matching_mode === "fingerprint" ? "fingerprint" : "filename";
     const radio = document.querySelector(`input[name="matching_mode"][value="${mode}"]`);
