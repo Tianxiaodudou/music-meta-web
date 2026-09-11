@@ -11,7 +11,7 @@
     --st-auto-bg:#d4edda;    --st-auto-fg:#155724;   /* 自动写入 浅绿 */
     --st-pending-bg:#e7e9ee; --st-pending-fg:#555;   /* 待刮削前 浅灰 */
     --st-done-bg:#1aab5e;    --st-done-fg:#fff;      /* 已人工   绿   */
-    --st-manual-bg:#ffe08a;  --st-manual-fg:#7a5b00; /* 待人工关 黄   */
+    --st-manual-bg:#ffe08a;  --st-manual-fg:#7a5b00; /* 待人工   黄   */
     --st-skip-bg:#fff8dc;    --st-skip-fg:#8a6d1d;   /* 跳过     浅黄 */
     --st-error-bg:#d9534f;   --st-error-fg:#fff;     /* 错误     红   */
   }
@@ -43,6 +43,8 @@
   button.warn { background:var(--warn); }
   button.danger { background:var(--err); }
   button:disabled { opacity:.45; cursor:not-allowed; }
+  .progrow { display:flex; align-items:center; gap:10px; margin:8px 0; }
+  .progrow .progress { flex:1; margin:0; }
   .progress { background:#e9ecef; border-radius:4px; height:10px; margin:8px 0; overflow:hidden; }
   .progress > div { background:var(--accent); height:100%; }
   .muted { color:#888; font-size:12px; }
@@ -99,7 +101,15 @@
   .rename-pop .rrow { display:flex; gap:8px; align-items:center; }
   .rename-pop input { flex:1; min-width:0; }
   /* 候选值下拉 */
-  .cand-menu { max-height:46vh; overflow:auto; max-width:min(720px,94vw); }
+  .cand-menu { max-height:46vh; overflow:auto; max-width:min(720px,94vw); min-width:320px; }
+  .cand-menu .cm-item.cover { flex-direction:row; align-items:flex-start; gap:10px; }
+  .cand-menu .cm-thumb { width:48px; height:48px; border-radius:5px; object-fit:cover;
+                         background:#eee; flex-shrink:0; }
+  .cand-menu .cm-thumb.empty { display:block; }
+  .cand-menu .cm-body { display:flex; flex-direction:column; gap:2px; min-width:0; }
+  .cand-menu .cm-val.url { font-size:11.5px; color:#666; word-break:break-all; }
+  .sr-candwrap { display:flex; align-items:center; gap:8px; width:100%; }
+  .sr-candthumb { width:44px; height:44px; border-radius:4px; object-fit:cover; background:#eee; flex-shrink:0; }
   .cand-menu .cm-item { display:flex; flex-direction:column; gap:2px; padding:6px 9px; border-radius:5px; cursor:pointer; }
   .cand-menu .cm-item:hover { background:#eef6ff; }
   .cand-menu .cm-val { font-size:13px; word-break:break-all; }
@@ -189,12 +199,11 @@
 <body>
 <div id="msg"></div>
 
-<!-- ======= 顶栏（全局置顶：统计 + 右上角设置齿轮） ======= -->
+<!-- ======= 顶栏（全局置顶：运行状态 + 右上角设置齿轮；计数已在状态过滤器里） ======= -->
 <div class="topbar">
   <div class="row1">
     <h1>🎵 音乐数据刮削</h1>
     <span class="running" id="runState"></span>
-    <div class="stats" id="stats"></div>
     <button class="gear" id="gearBtn" onclick="showPage('config')" title="设置">⚙</button>
   </div>
   <div class="actions">
@@ -219,7 +228,10 @@
       </div>
       <div class="row" id="advfilter"></div>
       <div class="row" id="batchbar"></div>
-      <div class="progress"><div id="prog" style="width:0%"></div></div>
+      <div class="progrow">
+        <div class="progress"><div id="prog" style="width:0%"></div></div>
+        <span class="muted" id="progText"></span>
+      </div>
       <div id="emptyGuide" style="display:none;background:#fff8e1;border:1px solid #ffe082;border-radius:6px;padding:10px 14px;margin:10px 0;font-size:13px;line-height:1.9">
         <b>还没有任何任务，按下面三步开始：</b><br>
         ① 先在「应用中心 → 音乐数据刮削 → 设置 → 授权目录」把音乐目录（如 /vol2/1000/音频库）授权给本应用<br>
@@ -274,8 +286,15 @@
         <label class="muted" style="color:var(--warn)">⚠ 开启后：长时间无人使用（且无刮削任务）会自动退出进程释放资源。退出后 fnOS 会显示应用「未运行」，需要到<b>应用中心 → 音乐数据刮削 → 启用</b>才能再次打开。默认关闭（进程常驻，不自动退出）。</label>
       </div>
       <div class="row">
-        <label><b>元数据源（可多选）</b></label>
-        <span id="source_checks"></span>
+        <label><b>元数据源</b>（勾选可用的源，手动刮削按这里取候选）</label>
+        <div class="dropdown">
+          <button class="secondary" id="srcBtn" onclick="toggleSourceDrop(event)">选择数据源 ▾</button>
+          <div class="pop" id="srcPanel" onclick="event.stopPropagation()">
+            <div id="source_checks" style="display:flex;flex-direction:column;gap:6px;min-width:200px"></div>
+            <div class="muted" id="srcHint" style="margin-top:8px"></div>
+          </div>
+        </div>
+        <span class="muted" id="srcSummary"></span>
       </div>
       <div class="row">
         <label>插件目录</label>
@@ -407,7 +426,7 @@ const STATUSES = [
   {key:"auto_ok",        label:"自动写入"},
   {key:"pending",        label:"待刮削前"},
   {key:"manual_done",    label:"已人工"},
-  {key:"manual_pending", label:"待人工关"},
+  {key:"manual_pending", label:"待人工"},
   {key:"skipped",        label:"跳过"},
   {key:"error",          label:"错误"},
 ];
@@ -483,17 +502,11 @@ function showPage(name){
 async function loadStats(){
   const s = await api("/api/stats");
   const total = Object.values(s).reduce((a,b)=>a+b,0);
-  const done = (s.auto_ok||0)+(s.manual_done||0)+(s.skipped||0)+(s.error||0);
+  const done = (s.auto_ok||0)+(s.processing||0)+(s.manual_done||0)+(s.skipped||0)+(s.error||0);
   const pct = total ? Math.round(done/total*100) : 0;
   const el = $("prog"); if(el) el.style.width = pct + "%";
-  $("stats").innerHTML =
-    `<span>总数 <b>${total}</b></span>` +
-    `<span>自动写入 <b style="color:var(--ok)">${s.auto_ok||0}</b></span>` +
-    `<span>待人工关 <b style="color:var(--warn)">${s.manual_pending||0}</b></span>` +
-    `<span>已人工 <b style="color:var(--accent)">${s.manual_done||0}</b></span>` +
-    `<span>跳过 <b>${s.skipped||0}</b></span>` +
-    `<span>错误 <b style="color:var(--err)">${s.error||0}</b></span>` +
-    `<span>进度 <b>${pct}%</b></span>`;
+  const txt = $("progText");
+  if(txt) txt.textContent = `进度 ${pct}%（已处理 ${done} / 共 ${total}）`;
   $("emptyGuide").style.display = total ? "none" : "block";
   renderChips(s);
 }
@@ -620,6 +633,7 @@ function renderBatchBar(){
 function closeAllPops(){
   ["statusMenu","renamePop","candMenu"].forEach(id => $(id).classList.remove("open"));
   const p = $("afPanel"); if(p) p.classList.remove("open");
+  const sp = $("srcPanel"); if(sp) sp.classList.remove("open");
 }
 function placePop(el, anchor){
   const r = anchor.getBoundingClientRect();
@@ -636,7 +650,9 @@ document.addEventListener("click", ev => {
   if(!inside) closeAllPops();
 });
 window.addEventListener("resize", closeAllPops);
-window.addEventListener("scroll", closeAllPops, true);
+// 注意：不要在 scroll 时关闭浮层 —— 手动刮削窗口里歌词会自动滚动（播放同步高亮），
+// 用捕获阶段的 scroll 监听会把刚打开、用户还没点的下拉菜单直接关掉。
+window.addEventListener("keydown", ev => { if(ev.key === "Escape") closeAllPops(); });
 
 // ---------------- 状态标签：点击指定状态 ----------------
 let statusTarget = {file:"", cur:""};
@@ -780,10 +796,16 @@ function renderScrub(){
 function fieldRowHtml(f){
   const isCover = f.special === "cover";
   const curHtml = isCover
-    ? (f.current ? `<span class="sr-cur">已内嵌封面</span>` : `<span class="sr-cur empty">（无封面）</span>`)
+    ? (f.current_url
+        ? `<img class="sr-thumb" src="${BASE + esc(f.current_url)}" title="文件内嵌封面"
+             onerror="this.outerHTML='<span class=&quot;sr-cur empty&quot;>（封面读取失败）</span>'">`
+        : `<span class="sr-cur empty">（无封面）</span>`)
     : (f.current ? `<span class="sr-cur">${esc(f.current)}</span>` : `<span class="sr-cur empty">（空）</span>`);
   const inputHtml = isCover
-    ? `<input class="sr-in" id="in_${f.key}" placeholder="候选封面 URL（点右侧「手动刮削」选择）" oninput="syncWrite('${f.key}')">`
+    ? `<div class="sr-candwrap"><img class="sr-candthumb" id="thumb_${f.key}" alt=""
+         style="display:none" onerror="this.style.display='none'">
+         <input class="sr-in" id="in_${f.key}" placeholder="候选封面 URL（点右侧「手动刮削」选择）"
+                oninput="syncWrite('${f.key}')"></div>`
     : `<input class="sr-in" id="in_${f.key}" placeholder="候选值（点右侧「手动刮削」选择）" oninput="syncWrite('${f.key}')">`;
   return `<div class="scrub-row">
     <div class="sr-name">${esc(f.label)}</div>
@@ -813,13 +835,19 @@ function toggleCandMenu(ev, key){
   sc.menuKey = key;
   const isCover = f.special === "cover";
   $("candMenu").innerHTML = f.candidates.length
-    ? f.candidates.map((c, i) =>
-        `<div class="cm-item" onclick="pickCand('${key}', ${i})">
-           ${isCover ? `<img src="${esc(c.value)}" style="width:100%;max-width:220px;border-radius:5px"
-                 onerror="this.style.display='none'">` : ""}
-           <span class="cm-val">${esc(c.value)}</span>
-           <span class="cm-src">${esc(c.source)}${c.title ? " · " + esc(c.title) : ""}${c.artist ? " - " + esc(c.artist) : ""}</span>
-         </div>`).join("")
+    ? f.candidates.map((c, i) => isCover
+        ? `<div class="cm-item cover" onclick="pickCand('${key}', ${i})">
+             <img class="cm-thumb" src="${esc(c.value)}" alt=""
+                  onerror="this.className='cm-thumb empty';this.removeAttribute('src')">
+             <div class="cm-body">
+               <span class="cm-src">${esc(c.source)}${c.title ? " · " + esc(c.title) : ""}${c.artist ? " - " + esc(c.artist) : ""}</span>
+               <span class="cm-val url">${esc(c.value)}</span>
+             </div>
+           </div>`
+        : `<div class="cm-item" onclick="pickCand('${key}', ${i})">
+             <span class="cm-val">${esc(c.value)}</span>
+             <span class="cm-src">${esc(c.source)}${c.title ? " · " + esc(c.title) : ""}${c.artist ? " - " + esc(c.artist) : ""}</span>
+           </div>`).join("")
     : `<div class="cm-empty">该字段没有候选值（换个数据源或改文件名后重试）</div>`;
   placePop($("candMenu"), ev.currentTarget);
 }
@@ -829,6 +857,10 @@ function pickCand(key, idx){
   const c = f.candidates[idx];
   const input = $("in_" + key);
   input.value = c.value;
+  if(key === "cover"){
+    const t = $("thumb_cover");
+    if(t){ t.src = c.value; t.style.display = ""; t.onerror = () => { t.style.display = "none"; }; }
+  }
   closeAllPops();
   syncWrite(key);
 }
@@ -972,14 +1004,14 @@ async function reprocessPending(){
   }catch(e){ msg("操作失败：" + (e.message||e)); }
 }
 async function batchBest(){
-  if(!confirm("把「待人工关」队列里每首歌的最高分候选直接写入？")) return;
+  if(!confirm("把「待人工」队列里每首歌的最高分候选直接写入？")) return;
   try{
     const r = await jsonPost("/api/decide/batch", {mode:"best"});
     msg(`批量完成：${r.chosen} 首已写入`); await loadStats(); await loadQueue();
   }catch(e){ msg("批量操作失败：" + (e.message||e)); }
 }
 async function batchSkip(){
-  if(!confirm("跳过「待人工关」队列里的所有文件？")) return;
+  if(!confirm("跳过「待人工」队列里的所有文件？")) return;
   try{
     const r = await jsonPost("/api/decide/batch", {mode:"skip"});
     msg(`已跳过 ${r.skipped} 首`); await loadStats(); await loadQueue();
@@ -1043,10 +1075,15 @@ async function loadConfig(){
     const s = await api("/api/sources");
     const cur = (c.source || "").split(",").map(x=>x.trim()).filter(Boolean);
     $("source_checks").innerHTML = (s.sources||[]).map(name =>
-      `<label style="margin-right:10px"><input type="checkbox" id="src_${esc(name)}"
-        ${cur.includes(name)?"checked":""}> ${esc(name)}</label>`).join("") ||
-      `<span class="muted" style="color:#c0392b">⚠ 暂无可用数据源：请把数据源 .py 复制到插件目录
-       （${esc(s.plugins_dir || "应用数据目录 plugins/")}），然后重启应用</span>`;
+      `<label style="font-size:13px"><input type="checkbox" value="${esc(name)}"
+        ${cur.includes(name)?"checked":""} onchange="updateSourceSummary()"> ${esc(name)}</label>`
+      ).join("") ||
+      `<span class="muted" style="color:#c0392b;max-width:260px;line-height:1.6">⚠ 暂无可用数据源：
+       请把数据源 .py 复制到插件目录（${esc(s.plugins_dir || "应用数据目录 plugins/")}），
+       然后重启应用</span>`;
+    $("srcHint").innerHTML = s.plugins_dir
+      ? "当前插件目录：" + esc(s.plugins_dir) : "";
+    updateSourceSummary();
     if(s.plugins_dir) $("plugins_dir_hint").textContent = "当前插件目录：" + s.plugins_dir;
   }catch(e){ msg("读取配置失败：" + (e.message||e)); }
 }
@@ -1073,6 +1110,20 @@ function toggleFieldDrop(ev){
   closeAllPops();
   if(!open){ p.classList.add("open"); placePop(p, $("afBtn")); }
 }
+function toggleSourceDrop(ev){
+  ev.stopPropagation();
+  const p = $("srcPanel");
+  const open = p.classList.contains("open");
+  closeAllPops();
+  if(!open){ p.classList.add("open"); placePop(p, $("srcBtn")); }
+}
+function updateSourceSummary(){
+  const names = Array.from(document.querySelectorAll('#source_checks input:checked'))
+                     .map(x => x.value);
+  $("srcSummary").textContent = names.length
+    ? `已选：${names.join("、")}` : "未选择任何数据源（无法刮削）";
+}
+
 function toggleIdleExit(){
   const on = $("idle_exit_enable").checked;
   $("idle_exit_minutes").disabled = !on;

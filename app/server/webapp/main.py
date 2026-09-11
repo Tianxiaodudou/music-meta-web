@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import os
 import threading
+import urllib.parse
 import time
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -460,8 +461,10 @@ def scrub_file(file: str):
         if f.key not in active or f.special == "lyrics":
             continue
         current = ""
+        current_url = ""
         if f.special == "cover":
-            current = "（文件内已有封面）" if has_cover else ""
+            if has_cover:
+                current_url = "api/embedded-cover/" + urllib.parse.quote(file, safe="")
         else:
             current = str(tags.get(f.tag) or "")
         cands: list = []
@@ -479,7 +482,8 @@ def scrub_file(file: str):
             cands.append({"value": value, "source": m.source, "title": m.title,
                           "artist": m.artist, "song_id": m.song_id})
         fields.append({"key": f.key, "label": f.label, "special": f.special,
-                       "current": current, "candidates": cands})
+                       "current": current, "current_url": current_url,
+                       "candidates": cands})
 
     lyrics_cands = [{"value": "", "source": m.source, "title": m.title,
                      "artist": m.artist, "song_id": m.song_id}
@@ -681,6 +685,37 @@ def stream_audio(file: str):
     import mimetypes
     mt = mimetypes.guess_type(file)[0] or "application/octet-stream"
     return FileResponse(file, media_type=mt, filename=os.path.basename(file))
+
+
+@app.get("/api/embedded-cover/{file:path}")
+def embedded_cover(file: str):
+    """返回音乐文件里内嵌的封面图（供手动刮削窗口显示「原有封面」缩略图）。
+
+    只允许读取已配置音乐目录内的文件；封面多为几百 KB，前端用小图显示即可。
+    """
+    import musicmeta.writer as _w
+    if not os.path.isfile(file):
+        raise HTTPException(404, "文件不存在")
+    root = os.path.abspath(db.get_config().get("music_dir", "") or "/")
+    f = os.path.abspath(file)
+    if not f.startswith(root + os.sep) and f != root:
+        raise HTTPException(403, "文件不在已配置的音乐目录内")
+    try:
+        data = _w.read_picture(file)
+    except Exception:
+        data = None
+    if not data:
+        raise HTTPException(404, "该文件没有内嵌封面")
+    if data[:4] == b"\x89PNG":
+        mt = "image/png"
+    elif len(data) > 12 and data[8:12] == b"WEBP":
+        mt = "image/webp"
+    elif data[:2] == b"\xff\xd8":
+        mt = "image/jpeg"
+    else:
+        mt = "application/octet-stream"
+    return Response(content=data, media_type=mt,
+                    headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/health")
