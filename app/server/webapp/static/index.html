@@ -356,7 +356,7 @@
         <input type="password" id="acoustid_key" style="width:280px">
       </div>
       <div class="row">
-        <label><input type="checkbox" id="write_enabled"> <b style="color:var(--warn)">启用真实写入</b>（关闭=仅学习/预览；开启后才会真正写入，且人工处理过的歌曲才会被永久记忆并自动排除）</label>
+        <label><input type="checkbox" id="write_enabled"> <b style="color:var(--warn)">启用真实写入</b>（关闭=仅学习/预览；开启后才会真正写入。清空任务后重新扫描时，已人工处理过的歌曲仍会被标为「已人工」并自动排除，可用设置里的记录导出/导入备份）</label>
         <button class="secondary" onclick="saveConfig()">保存配置</button>
       </div>
     </div>
@@ -892,7 +892,9 @@ function confirmDelete(file, name){
     `歌曲：<b>${esc(name)}</b><br>路径：<span class="muted">${esc(file)}</span><br><br>` +
     `请选择删除方式：<br>` +
     `① <b>只删除任务</b> — 只把这首歌从队列移除，音乐文件保留在磁盘上；<br>` +
-    `② <b>删除任务 + 文件本体</b> — 任务和磁盘上的音乐文件都会删除，无法找回。`;
+    `② <b>删除任务 + 文件本体</b> — 任务和磁盘上的音乐文件都会删除，无法找回。<br><br>` +
+    `<span class="muted">两种方式都会保留「人工处理记录」：重新扫描时这首歌仍会标为「已人工」，
+     要让它重新刮削，请先把状态指定为「待处理」。</span>`;
   $("delModal").classList.add("open");
   document.body.style.overflow = "hidden";
 }
@@ -1243,7 +1245,9 @@ async function scan(){
     const cfg = await api("/api/config");
     if(!cfg.music_dir){ msg("请先到设置里填写音乐目录"); showPage("config"); return; }
     const r = await jsonPost("/api/scan", {});
-    msg(`已扫描：新增 ${r.added || 0} 个文件`); await loadStats(); await loadQueue();
+    let m = `已扫描：共 ${r.total || 0} 个文件，新增 ${r.added || 0} 个`;
+    if(r.manual_done) m += `，其中 ${r.manual_done} 个已是「已人工」`;
+    msg(m); await loadStats(); await loadQueue();
   }catch(e){ msg("扫描失败：" + (e.message||e)); }
 }
 async function run(){ await jsonPost("/api/run", {}); msg("刮削已启动"); poll(); }
@@ -1389,8 +1393,9 @@ async function importManual(input){
     if(!r.ok) throw new Error(d.detail || t || ("HTTP " + r.status));
     const md = d.manual_done || {}, dec = d.decisions || {};
     msg(`导入完成：人工记录 新增 ${md.added||0} / 更新 ${md.updated||0}`
-        + `，选择记录 新增 ${dec.added||0} / 更新 ${dec.updated||0}`);
-    await loadConfig();
+        + `，选择记录 新增 ${dec.added||0} / 更新 ${dec.updated||0}`
+        + (d.tasks_synced ? `；队列里 ${d.tasks_synced} 条任务已同步标为「已人工」` : ""));
+    await loadConfig(); await loadStats(); await loadQueue();
   }catch(e){ msg("导入失败：" + (e.message||e)); }
   finally{ input.value = ""; }
 }

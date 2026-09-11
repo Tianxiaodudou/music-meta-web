@@ -178,15 +178,25 @@ class ScanBody(BaseModel):
 
 @app.post("/api/scan")
 def scan(body: ScanBody):
-    """扫描目录：只解析文件名生成待处理清单，不修改任何音乐文件。"""
+    """扫描目录：只解析文件名生成待处理清单，不修改任何音乐文件。
+
+    已在「人工处理永久记忆」里的文件（含被改名/搬家、按大小+哈希认出来的）
+    直接以「已人工」状态入列，不会被打回待处理、也不会再次被刮削；
+    只有人工把它指定成别的状态，它才会离开「已人工」。
+    """
     cfg = db.get_config()
     path = body.path or cfg.get("music_dir", "")
     recursive = body.recursive if body.recursive is not None else cfg.get("recursive") == "1"
     if not os.path.isdir(path):
         raise HTTPException(400, f"目录不存在或不可读: {path}")
     files = scheduler.collect_audio_files(path, recursive)
-    added = db.add_tasks(files)
-    return {"path": path, "total": len(files), "added": added}
+    try:
+        mem = db.memory_hits(files)
+    except Exception:  # noqa: BLE001  记忆表异常不应挡住扫描
+        mem = set()
+    res = db.add_tasks(files, mem)
+    return {"path": path, "total": len(files), "added": res["added"],
+            "manual_done": res["manual_done"], "memory": len(mem)}
 
 
 @app.post("/api/tasks/reset")
@@ -211,9 +221,10 @@ class DeleteTaskBody(BaseModel):
 def delete_task(body: DeleteTaskBody):
     """删除单个任务（人工辅助/跳过队列用）。
 
-    delete_file=False：只删除数据库里的任务记录（候选/决策/人工记忆一并清理），
-    磁盘上的音乐文件保留；
-    delete_file=True：先删除磁盘上的音乐文件本体，再删除任务记录。
+    delete_file=False：只删除队列记录（候选/选择记录一并清理），磁盘上的音乐文件保留；
+    delete_file=True：先删除磁盘上的音乐文件本体，再删除队列记录。
+    任何一种方式都**不会**删掉「人工处理永久记忆」：删除只表示移出队列，
+    重新扫描时仍会标回「已人工」；要重刮请先把它指定为「待处理」（会清掉记忆）。
     """
     path = body.file
     if not path or not isinstance(path, str) or not path.strip():
@@ -795,6 +806,11 @@ async def manual_done_import(file: UploadFile = File(...)):
         stat = db.import_manual_done(data)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+    # 记录导入后，队列里待处理且已在记忆中的任务同步纠正为「已人工」
+    try:
+        stat["tasks_synced"] = db.sync_memory_tasks()
+    except Exception:  # noqa: BLE001
+        stat["tasks_synced"] = 0
     print(f"[manual] 导入人工记录：{stat}")
     return stat
 

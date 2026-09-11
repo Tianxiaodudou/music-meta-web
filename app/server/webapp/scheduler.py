@@ -586,12 +586,11 @@ class Scraper(threading.Thread):
             if self._limit_reached():
                 db.update_task_status(path, "pending")   # 超出本次上限：放回队列
                 return
-            # 已人工处理过的音乐（永久记忆哈希）→ 刮削时排除
+            # 已人工处理过的音乐（永久记忆：路径或大小+哈希）→ 不发请求，
+            # 并就地标记回「已人工」（人工指定成别的状态才会离开这个状态）
             try:
                 if db.is_manual_done(path):
-                    db.update_task_status(
-                        path, "skipped",
-                        error="已人工处理过（永久记忆），本次刮削已排除")
+                    db.set_status(path, "manual_done", error=db.MANUAL_NOTE)
                     continue
             except Exception:
                 pass

@@ -42,11 +42,13 @@ CREATE TABLE IF NOT EXISTS decisions (
     songmid    TEXT,                  -- 空串表示跳过
     decided_at TEXT
 );
--- 已人工处理永久记忆（写入模式下记录；刮削时排除）
+-- 已人工处理永久记忆（刮削时排除；重新扫描时自动标记为「已人工」）
 -- 以文件路径为主键（同一文件只记一行，存最新内容哈希）；哈希用于文件移动后仍可识别
+-- file_size 是识别改名/搬家文件的前置筛子：大小不同就不必读内容算哈希
 CREATE TABLE IF NOT EXISTS manual_done (
     file_path TEXT PRIMARY KEY,
     file_hash TEXT,
+    file_size INTEGER,
     done_at   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
@@ -84,6 +86,9 @@ DEFAULTS: Dict[str, str] = {
     "active_fields": "title,artist,cover,lyrics",
 }
 
+#: 命中「人工处理永久记忆」时写入任务备注的固定文案（扫描 / 刮削 / 导入共用一处）
+MANUAL_NOTE = "已人工处理过（永久记忆），已自动标记为「已人工」"
+
 
 def connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, timeout=30)
@@ -109,6 +114,20 @@ def init_db() -> None:
         # 兼容旧库：补 candidates.verified 列（文件名反推校验结果）
         if "verified" not in ccols:
             c.execute("ALTER TABLE candidates ADD COLUMN verified INTEGER")
+        # 兼容旧库：manual_done 补 file_size 列，并尽量从磁盘回填
+        # （文件若已改名/搬家则回填不到，这类旧记录会走「未知大小」兜底逻辑）
+        mcols = [r[1] for r in c.execute("PRAGMA table_info(manual_done)").fetchall()]
+        if "file_size" not in mcols:
+            c.execute("ALTER TABLE manual_done ADD COLUMN file_size INTEGER")
+        rows = c.execute("SELECT file_path FROM manual_done "
+                         "WHERE file_size IS NULL").fetchall()
+        for r in rows:
+            try:
+                size = os.path.getsize(r["file_path"])
+            except OSError:
+                continue
+            c.execute("UPDATE manual_done SET file_size=? WHERE file_path=?",
+                      (size, r["file_path"]))
         # 清理已废弃的配置键（旧版逐个字段的 write_* 开关与 threshold，
         # 现由 active_fields 与「文件名反推校验」取代）
         c.execute("DELETE FROM config WHERE key LIKE 'write\\_%' ESCAPE '\\' "
@@ -153,33 +172,56 @@ def reset_tasks() -> None:
 
 
 def delete_task(path: str) -> int:
-    """删除单个任务及其候选/决策/人工记忆记录。返回删除的任务行数。
+    """删除单个任务（连同该文件的候选与选择记录）。返回删除的任务行数。
 
-    只删数据库记录（tasks/candidates/decisions/manual_done），不动磁盘文件；
-    是否删除文件本体由上层（API）决定。
+    只删队列相关记录（tasks/candidates/decisions），不动磁盘文件，也**不动人工处理
+    永久记忆**（manual_done）：删除只表示「移出队列」，重新扫描时仍会按永久记忆
+    标回「已人工」；要让某首歌重新刮削，得先人工把它指定为「待处理」
+    （那一步会清掉永久记忆）。是否删除文件本体由上层（API）决定。
     """
     with connect() as c:
         cur = c.execute("DELETE FROM tasks WHERE path=?", (path,))
         c.execute("DELETE FROM candidates WHERE file_path=?", (path,))
         c.execute("DELETE FROM decisions WHERE file_path=?", (path,))
-        c.execute("DELETE FROM manual_done WHERE file_path=?", (path,))
     return cur.rowcount
 
 
-def add_tasks(files: List[str]) -> int:
-    added = 0
+def add_tasks(files: List[str], manual: Optional[set] = None) -> Dict[str, int]:
+    """把扫描到的文件加入任务表。
+
+    manual 是「命中人工处理永久记忆」的路径集合（由 memory_hits 计算）：
+    这些文件直接以 manual_done 状态入列，重新扫描不会把它们打回待处理；
+    已存在且处于 pending 的同类任务也一并纠正为 manual_done（例如先导入记录再扫描）。
+
+    返回 {"added": 新增任务数, "manual_done": 其中/被纠正为已人工的条数}。
+    """
+    manual = manual or set()
+    added = done = 0
     now = time.strftime("%Y-%m-%d %H:%M:%S")
     with connect() as c:
         for path in files:
-            cur = c.execute("SELECT 1 FROM tasks WHERE path=?", (path,))
-            if cur.fetchone():
+            is_mem = path in manual
+            row = c.execute("SELECT status FROM tasks WHERE path=?", (path,)).fetchone()
+            if row:
+                # 只纠正 pending（唯一会重新进入刮削的状态）；
+                # 其它状态是人工指定或刮削结果，保持不动
+                if is_mem and row["status"] == "pending":
+                    c.execute(
+                        "UPDATE tasks SET status='manual_done', error=?, "
+                        "updated_at=? WHERE path=?",
+                        (MANUAL_NOTE, now, path))
+                    done += 1
                 continue
             c.execute(
-                "INSERT OR IGNORE INTO tasks(path, name, status, updated_at) "
-                "VALUES(?, ?, 'pending', ?)",
-                (path, os.path.basename(path), now))
+                "INSERT OR IGNORE INTO tasks(path, name, status, error, updated_at) "
+                "VALUES(?, ?, ?, ?, ?)",
+                (path, os.path.basename(path),
+                 "manual_done" if is_mem else "pending",
+                 MANUAL_NOTE if is_mem else "", now))
             added += 1
-    return added
+            if is_mem:
+                done += 1
+    return {"added": added, "manual_done": done}
 
 
 def claim_next(scope: Optional[set] = None) -> Optional[dict]:
@@ -314,7 +356,7 @@ def count_search(q: str, status: Optional[str] = None) -> int:
             f"SELECT COUNT(*) AS n FROM tasks WHERE {cond}", params).fetchone()["n"]
 
 
-# ---------------- 已人工处理永久记忆（哈希） ----------------
+# ---------------- 已人工处理永久记忆（路径 / 大小 + 哈希） ----------------
 
 def manual_done_stats() -> dict:
     """人工处理记录条数（含人工选择记录）。"""
@@ -328,7 +370,7 @@ def export_manual_done() -> dict:
     """导出人工处理记录（永久记忆 + 人工选择记录），供任意终端下载保存。"""
     with connect() as c:
         md = [dict(r) for r in c.execute(
-            "SELECT file_path, file_hash, done_at FROM manual_done "
+            "SELECT file_path, file_hash, file_size, done_at FROM manual_done "
             "ORDER BY done_at")]
         dec = [dict(r) for r in c.execute(
             "SELECT file_path, songmid, decided_at FROM decisions "
@@ -367,11 +409,21 @@ def import_manual_done(data: dict) -> dict:
                 continue
             exists = c.execute("SELECT 1 FROM manual_done WHERE file_path=?",
                                (path,)).fetchone() is not None
+            try:
+                size = int(r.get("file_size") or 0)
+            except (TypeError, ValueError):
+                size = 0
+            if not size:
+                try:
+                    size = os.path.getsize(path)
+                except OSError:
+                    size = 0
             c.execute(
-                "INSERT INTO manual_done(file_path, file_hash, done_at) VALUES(?,?,?) "
+                "INSERT INTO manual_done(file_path, file_hash, file_size, done_at) "
+                "VALUES(?,?,?,?) "
                 "ON CONFLICT(file_path) DO UPDATE SET file_hash=excluded.file_hash, "
-                "done_at=excluded.done_at",
-                (path, str(r.get("file_hash") or "").strip(),
+                "file_size=excluded.file_size, done_at=excluded.done_at",
+                (path, str(r.get("file_hash") or "").strip(), size,
                  str(r.get("done_at") or "").strip() or now))
             updated += 1 if exists else 0
             added += 0 if exists else 1
@@ -419,15 +471,19 @@ def file_sha256(path: str) -> str:
 
 
 def record_manual_done(path: str) -> str:
-    """把人工处理过的文件永久记忆（写模式开启时调用）。返回内容哈希。"""
+    """把人工处理过的文件永久记忆（写入模式下调用）。返回内容哈希。"""
     fh = file_sha256(path)
     if not fh:
         return ""
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        size = 0
     now = time.strftime("%Y-%m-%d %H:%M:%S")
     with connect() as c:
         c.execute(
-            "INSERT OR REPLACE INTO manual_done(file_path, file_hash, done_at) "
-            "VALUES(?,?,?)", (path, fh, now))
+            "INSERT OR REPLACE INTO manual_done(file_path, file_hash, file_size, "
+            "done_at) VALUES(?,?,?,?)", (path, fh, size, now))
     return fh
 
 
@@ -438,19 +494,61 @@ def remove_manual_done(path: str) -> bool:
         return cur.rowcount > 0
 
 
+def memory_hits(paths) -> set:
+    """批量找出哪些文件属于「人工处理永久记忆」。
+
+    先按路径命中（绝大多数情况，零成本）；未命中的再用「大小 + 内容 sha256」
+    兜底识别被改名/搬家过的文件——先用 file_size 做筛子，大小对不上就不读内容，
+    因此整个音乐库扫描只是每文件一次 stat，不会把整库都哈希一遍。
+    旧库中大小未知（文件早已搬走）的记录会让整表退化为逐个哈希比对（与旧行为一致）。
+    """
+    paths = list(paths)
+    if not paths:
+        return set()
+    with connect() as c:
+        rows = c.execute("SELECT file_path, file_hash, file_size "
+                         "FROM manual_done").fetchall()
+    if not rows:
+        return set()
+    known = {r["file_path"] for r in rows}
+    hits = {p for p in paths if p in known}
+    hashes = {r["file_hash"] for r in rows if r["file_hash"]}
+    if not hashes:
+        return hits
+    sizes = {int(r["file_size"]) for r in rows if r["file_size"]}
+    # 有哈希但不知道大小的记录：无法用大小筛选，只能对剩余文件逐个算哈希
+    size_unknown = any(r["file_hash"] and not r["file_size"] for r in rows)
+    for p in paths:
+        if p in hits:
+            continue
+        try:
+            size = os.path.getsize(p)
+        except OSError:
+            continue
+        if not size_unknown and size not in sizes:
+            continue
+        if file_sha256(p) in hashes:
+            hits.add(p)
+    return hits
+
+
 def is_manual_done(path: str) -> bool:
-    """按路径或内容哈希判断是否已人工处理过。"""
+    """按路径或（大小 + 内容哈希）判断是否已人工处理过。"""
+    return bool(memory_hits([path]))
+
+
+def sync_memory_tasks() -> int:
+    """把永久记忆里的 pending 任务纠正为 manual_done（导入人工记录后调用）。
+
+    返回被纠正的任务数；不动其它状态（其它状态是人工指定或刮削结果）。
+    """
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
     with connect() as c:
-        row = c.execute(
-            "SELECT 1 FROM manual_done WHERE file_path=?", (path,)).fetchone()
-        if row:
-            return True
-    fh = file_sha256(path)
-    if not fh:
-        return False
-    with connect() as c:
-        return c.execute(
-            "SELECT 1 FROM manual_done WHERE file_hash=?", (fh,)).fetchone() is not None
+        cur = c.execute(
+            "UPDATE tasks SET status='manual_done', error=?, updated_at=? "
+            "WHERE status='pending' AND path IN (SELECT file_path FROM manual_done)",
+            (MANUAL_NOTE, now))
+        return cur.rowcount
 
 
 # ---------------- 候选 / 决策 ----------------
