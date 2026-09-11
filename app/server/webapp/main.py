@@ -780,7 +780,6 @@ def manual_done_export():
 
     直接在浏览器/手机/iOS/APP 内点一下就能保存到当前终端的下载目录。
     """
-    import musicmeta.writer  # noqa: F401  (保持与其它接口一致的导入习惯)
     data = db.export_manual_done()
     body = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
     name = f"music-meta-manual-{time.strftime('%Y%m%d-%H%M%S')}.json"

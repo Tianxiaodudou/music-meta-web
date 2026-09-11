@@ -1,7 +1,8 @@
 # 元数据源插件开发规范（SPEC）
 
-本安装包**不内置任何数据源**。官方免配置数据源（单文件插件版）位于 NAS：
-`/vol2/1000/记录文档/数据源/`（qqmusic / netease / kugou / kuwo / lrclib / theaudiodb / itunes）。
+本安装包**不内置任何数据源**。官方免配置数据源（单文件插件版）在本仓库的
+`data-source-plugins/` 目录（github.com/Tianxiaodudou/music-meta-web）：
+qqmusic / netease / kugou / kuwo / lrclib / theaudiodb / itunes。
 把需要的 `.py` 复制到插件目录，重启应用后在配置页「元数据源」勾选。
 
 ## 最小插件模板
@@ -46,7 +47,7 @@ extra 附加: cover_url(封面URL)、lyrics(LRC歌词)、duration
 ## 打分
 可用 musicmeta.sources.base.simple_score(want_title, want_artist, got_title, got_artists)
 （0~100：基础40 + 标题一致/包含 + 歌手一致/包含）。参考实现：
-/vol2/1000/记录文档/数据源/qqmusic.py（最完整）。
+data-source-plugins/qqmusic.py（最完整）。
 
 ## 封面/歌词兜底
 插件在 extra 提供 cover_url/lyrics 则直接使用；否则应用尝试回查已安装的 qqmusic 插件。

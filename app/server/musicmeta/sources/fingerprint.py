@@ -15,7 +15,7 @@ import json
 import subprocess
 import urllib.parse
 import urllib.request
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 ACOUSTID_URL = "https://api.acoustid.org/v2/lookup"
 FPCALC_DEFAULT = "/usr/bin/fpcalc"

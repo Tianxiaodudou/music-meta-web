@@ -10,8 +10,8 @@
 - build_candidates(cleaned) -> List[Candidate]   第 2 步：生成候选查询词
 - verify_by_result(name, title, artist) -> bool  第 4 步：反推校验（包含式，顺序无关）
 
-兼容保留（旧「猜方向 + 打分」链路，仅供 music-metadata/scripts 等历史调用）：
-parse_candidates() / reverse_candidates() / dash_splits() / normalize_separators()。
+兼容保留（旧「猜方向」链路，仅供 auto_ok 缓存导出等历史调用）：
+parse_candidates() / dash_splits() / normalize_separators() / split_ext() / strip_track_prefix()。
 新代码请用 build_candidates() + verify_by_result()。
 """
 from __future__ import annotations
@@ -336,19 +336,6 @@ def verify_by_result(name: str, title: str, artist: str) -> bool:
 
 
 # ---- 兼容旧链路 ------------------------------------------------------------
-
-def reverse_candidates(cands: List[ParsedName]) -> List[ParsedName]:
-    """【兼容旧链路】把候选按「歌手-歌名」反序再生成一组。
-
-    新链路（build_candidates + verify_by_result）顺序无关，不需要这个兜底。
-    """
-    out: List[ParsedName] = []
-    for c in cands:
-        if c.artist and c.title and c.artist != c.title:
-            out.append(ParsedName(stem=c.stem, title=c.artist, artist=c.title,
-                                  ext=c.ext, track_hint=c.track_hint))
-    return out
-
 
 def parse_candidates(filename: str) -> List[ParsedName]:
     """【兼容旧链路】把文件名解析为若干 (标题, 歌手) 候选。"""

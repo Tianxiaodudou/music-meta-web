@@ -7,7 +7,7 @@
 3. 在应用配置页选择该元数据源即可生效（应用每次刮削时通过注册表创建实例）
 
 本安装包**不内置任何数据源**：所有源都从插件目录加载（单文件 .py）。
-官方免配置数据源见 NAS 上 /vol2/1000/记录文档/数据源/（qqmusic/netease/kugou/
+官方免配置数据源见本仓库 data-source-plugins/ 目录（qqmusic/netease/kugou/
 kuwo/lrclib/theaudiodb/itunes）。开发规范见插件目录 SPEC.md。
 """
 from __future__ import annotations

@@ -2,6 +2,15 @@
 
 本项目所有值得记录的变更都会列在此文件。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
+## [1.3.24] - 2026-09-12
+
+### 变更
+- **代码清理（无功能变化）**：删除无人引用的 `scheduler.is_running()`、`writer.has_metadata()`、
+  `filenames.reverse_candidates()`，以及多余的 import（`typing.Optional`、`run_server` 的 `threading`、
+  人工记录导出接口里的空导入）和前端一条已无对应元素的 `.cm-body` 样式；
+  旧链路的 `parse_candidates()` 等仍被「缓存导出」使用的函数保持不动。
+- 插件来源说明由本机 NAS 路径改为仓库 `data-source-plugins/` 目录（对任何用户都成立）。
+
 ## [1.3.23] - 2026-09-12
 
 ### 修复

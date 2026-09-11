@@ -307,17 +307,6 @@ def read_lyrics(path: str) -> str:
     return ""
 
 
-def has_metadata(path: str) -> bool:
-    """文件是否已写入标题与歌手（用于幂等跳过）。"""
-    try:
-        tags = read_tags(path)
-    except Exception:
-        return False
-    title = _get(tags, "title")
-    artist = _get(tags, "artist")
-    return bool(title and artist)
-
-
 def _get(tags: dict, key: str) -> str:
     """从 read_tags() 返回的字典取值。"""
     val = tags.get(key)

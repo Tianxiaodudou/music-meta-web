@@ -12,7 +12,6 @@
 """
 import os
 import sys
-import threading
 
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _APP_DIR)
@@ -21,8 +20,9 @@ sys.path.insert(0, _APP_DIR)
 # 首次启动时创建目录并写入开发规范（SPEC.md），不内置任何数据源。
 _SPEC = '''# 元数据源插件开发规范（SPEC）
 
-本安装包**不内置任何数据源**。官方免配置数据源（单文件插件版）位于 NAS：
-`/vol2/1000/记录文档/数据源/`（qqmusic / netease / kugou / kuwo / lrclib / theaudiodb / itunes）。
+本安装包**不内置任何数据源**。官方免配置数据源（单文件插件版）在本仓库的
+`data-source-plugins/` 目录（github.com/Tianxiaodudou/music-meta-web）：
+qqmusic / netease / kugou / kuwo / lrclib / theaudiodb / itunes。
 把需要的 `.py` 复制到本目录，重启应用后在配置页「元数据源」勾选。
 
 ## 最小插件模板
@@ -73,7 +73,7 @@ extra 附加: cover_url(封面URL)、lyrics(LRC歌词)、duration
 - 打分只用于候选排序，由应用层统一重算（校验通过 +40 / 时长接近度 +40 / 关键词吻合 +15+5）。
   插件内部的 confidence 仅作参考，可留 0；`simple_score()` 仍可用于插件自己筛结果。
   参考实现：
-/vol2/1000/记录文档/数据源/qqmusic.py（最完整）。
+data-source-plugins/qqmusic.py（最完整）。
 
 ## 封面/歌词兜底
 插件在 extra 提供 cover_url/lyrics 则直接使用；否则应用尝试回查已安装的 qqmusic 插件。

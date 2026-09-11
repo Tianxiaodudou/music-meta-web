@@ -735,7 +735,3 @@ def stop_scraper() -> None:
         _scraper.stop()
 
 
-def is_running() -> bool:
-    """调度器是否正在刮削（空闲自动退出时避免在有任务时退出）。"""
-    global _scraper
-    return _scraper is not None and _scraper.running
