@@ -211,10 +211,17 @@ def search_cached(src, title: str, artist: str = "", limit: int = 10,
     qt, qa = _search_query_keys(title, artist)
     key_title = qt or title.strip()
     key_artist = qa or artist.strip()
+    # 缓存键必须与「真正发给插件的查询词」一致：
+    # qqmusic 插件按清洗后的词搜（历史缓存也是这么写的），其它源按原文搜，
+    # 否则「晴天 (Live)」和「晴天」会共用同一个键、互相串味。
+    if name == "qqmusic":
+        q_title, q_artist = key_title, key_artist
+    else:
+        q_title, q_artist = title, artist
 
     if not force_live:
         # 1) 已确认歌曲缓存（仅 auto_ok 导出写入过才有）
-        fkey = _cache.key(name, "f", key_title, key_artist)
+        fkey = _cache.key(name, "f", q_title, q_artist)
         final = _cache.get(fkey)
         if final is not None:
             out = []
@@ -228,18 +235,16 @@ def search_cached(src, title: str, artist: str = "", limit: int = 10,
             out.sort(key=lambda x: x.confidence, reverse=True)
             return out[:limit]
         # 2) 普通搜索缓存
-        hit = _cache.search_hit(name, key_title, key_artist, simple_score, limit)
+        hit = _cache.search_hit(name, q_title, q_artist, simple_score, limit)
         if hit is not None:
             return hit
     # 3) 在线搜索（插件内部有风控限速）→ 写回缓存
     try:
-        metas = src.search(key_title if name == "qqmusic" else title,
-                           key_artist if name == "qqmusic" else artist,
-                           limit=limit)
+        metas = src.search(q_title, q_artist, limit=limit)
     except TypeError:
         metas = src.search(title, artist, limit=limit)
     if metas:
-        _cache.search_store(name, key_title, key_artist, metas)
+        _cache.search_store(name, q_title, q_artist, metas)
     return metas[:limit]
 
 
@@ -576,7 +581,7 @@ class Scraper(threading.Thread):
                   "请把数据源 .py 放入插件目录并重启应用后在配置页勾选源。")
             task = db.claim_next(self.scope)
             if task is not None:
-                db.update_task_status(task["path"], "pending")
+                db.set_status(task["path"], "pending")   # 放回队列（保留已匹配信息）
             return
         while not self._stop_flag.is_set():
             task = db.claim_next(self.scope)   # 原子认领，多 worker 不重复
@@ -584,7 +589,7 @@ class Scraper(threading.Thread):
                 return
             path = task["path"]
             if self._limit_reached():
-                db.update_task_status(path, "pending")   # 超出本次上限：放回队列
+                db.set_status(path, "pending")   # 超出本次上限：放回队列（保留已匹配信息）
                 return
             # 已人工处理过的音乐（永久记忆：路径或大小+哈希）→ 不发请求，
             # 并就地标记回「已人工」（人工指定成别的状态才会离开这个状态）
@@ -716,13 +721,19 @@ class Scraper(threading.Thread):
 _scraper: Optional[Scraper] = None
 
 
+def scraper_running() -> bool:
+    """刮削是否正在运行（供接口如实回答「有没有启动起来」）。"""
+    global _scraper
+    return _scraper is not None and _scraper.running
+
+
 def start_scraper(paths: Optional[list] = None) -> bool:
     """启动后台刮削；已在运行返回 False。
 
     paths 非空时只处理这些路径（用于"只刮错误/待人工队列里的那几首"）。
     """
     global _scraper
-    if _scraper is not None and _scraper.running:
+    if scraper_running():
         return False
     _scraper = Scraper(set(paths) if paths else None)
     _scraper.start()

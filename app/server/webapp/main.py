@@ -22,9 +22,29 @@ from musicmeta.fields import FIELD_MAP, FIELDS, active_fields, parse_active
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
-_last_request_ts: float = time.time()   # 最近一次 HTTP 请求时间（空闲退出监控用）
-
 app = FastAPI(title="音乐数据刮削", version="0.1.0")
+
+
+def _require_in_music_dir(path: str, what: str = "文件") -> str:
+    """统一前置闸：只允许操作「已配置音乐目录」内的文件，返回绝对路径。
+
+    所有接触文件的接口（播放、内嵌封面、手动写字段、手动刮削、重命名、删除）
+    都走这里，避免出现「有的接口管、有的不管」。音乐目录没配置时直接拒绝。
+    """
+    if not path or not isinstance(path, str) or not path.strip():
+        raise HTTPException(400, f"缺少{what}路径")
+    raw = (db.get_config().get("music_dir") or "").strip()
+    # 必须先用原始字符串判空：os.path.abspath("") 返回的是当前目录，
+    # 拿它当 root 会把「未配置音乐目录」误判成「文件不在目录内」。
+    if not raw:
+        raise HTTPException(400, "尚未配置音乐目录：请先到设置里填写音乐目录")
+    f = os.path.abspath(path)
+    root = os.path.abspath(raw)
+    if not (f.startswith(root + os.sep) or f == root):
+        raise HTTPException(403, f"{what}不在已配置的音乐目录内，已拒绝: {path}")
+    if not os.path.isfile(f):
+        raise HTTPException(404, f"{what}不存在: {path}")
+    return f
 
 
 def _resolve_src(meta_source: str, interval: float):
@@ -50,8 +70,6 @@ GATEWAY_PREFIX = os.environ.get("MMW_GATEWAY_PREFIX", "/app/music-meta-web").rst
 
 @app.middleware("http")
 async def strip_gateway_prefix(request, call_next):
-    global _last_request_ts
-    _last_request_ts = time.time()   # 记录任何请求活动（空闲自动退出用）
     if GATEWAY_PREFIX:
         path = request.scope.get("path", "")
         if path == GATEWAY_PREFIX or path.startswith(GATEWAY_PREFIX + "/"):
@@ -195,6 +213,7 @@ def scan(body: ScanBody):
     except Exception:  # noqa: BLE001  记忆表异常不应挡住扫描
         mem = set()
     res = db.add_tasks(files, mem)
+    _invalidate_filter_cache()   # 新扫入的文件要立刻出现在「缺歌词/缺封面」等筛选里
     return {"path": path, "total": len(files), "added": res["added"],
             "manual_done": res["manual_done"], "memory": len(mem)}
 
@@ -202,6 +221,7 @@ def scan(body: ScanBody):
 @app.post("/api/tasks/reset")
 def reset_tasks():
     db.reset_tasks()
+    _invalidate_filter_cache()
     return {"ok": True}
 
 
@@ -227,12 +247,15 @@ def delete_task(body: DeleteTaskBody):
     重新扫描时仍会标回「已人工」；要重刮请先把它指定为「待处理」（会清掉记忆）。
     """
     path = body.file
+    # 只允许删除已授权音乐目录内的文件（防误删其它位置）；文件本就不存在时也允许清掉任务
     if not path or not isinstance(path, str) or not path.strip():
         raise HTTPException(400, "缺少文件路径")
-    # 只允许删除已授权音乐目录内的文件（防误删其它位置）
-    root = os.path.abspath(db.get_config().get("music_dir", "") or "/")
+    raw = (db.get_config().get("music_dir") or "").strip()
+    if not raw:   # 同上：abspath("") 会变成当前目录，必须先判空
+        raise HTTPException(400, "尚未配置音乐目录：请先到设置里填写音乐目录")
+    root = os.path.abspath(raw)
     f = os.path.abspath(path)
-    if not f.startswith(root + os.sep) and f != root:
+    if not (f.startswith(root + os.sep) or f == root):
         raise HTTPException(403, f"文件不在已配置的音乐目录内，拒绝删除: {path}")
 
     file_deleted = False
@@ -262,6 +285,8 @@ def write_auto():
     """写入阶段：把已自动匹配（auto_ok）但尚未写入的文件按缓存候选补写。
 
     需要：网页勾选「启用写入」且音乐目录为可写挂载。
+    只处理「当前还没有写入记录」的任务（不看历史选择记录：状态只认当前生效的那份）。
+    写入成功仍记为「自动写入」——「已人工」只由人工逐条操作产生。
     返回写入数与跳过数（无候选的跳过）。
     """
     cfg = db.get_config()
@@ -272,8 +297,8 @@ def write_auto():
     written = skipped = failed = 0
     for t in db.list_tasks("auto_ok", limit=100000):
         path = t["path"]
-        if db.get_decision(path):
-            continue  # 已处理过
+        if (t.get("written") or "").strip():
+            continue  # 已经写过（当前状态里记着），不必重复
         cands = db.get_candidates(path)
         if not cands:
             skipped += 1
@@ -291,9 +316,8 @@ def write_auto():
             except Exception:
                 pass
             w = scheduler._write_fields(path, meta, src, cfg)
-            db.decide(path, top["songmid"], skip=False)
-            db.update_task_status(path, "manual_done",
-                                  written=",".join(w))
+            db.decide(path, top["songmid"], skip=False)     # 状态 → 自动写入
+            db.set_status(path, "auto_ok", written=",".join(w))
             written += 1
         except Exception:
             failed += 1
@@ -444,7 +468,12 @@ class TaskStatusBody(BaseModel):
 
 @app.post("/api/task-status")
 def set_task_status(body: TaskStatusBody):
-    """手动指定某个文件的状态（队列里点状态标签弹出的菜单调用）。"""
+    """手动指定某个文件的状态（队列里点状态标签弹出的菜单调用）。
+
+    这是「人工逐条」的操作，因此只有这里（以及手动刮削窗口写字段）会产生
+    「已人工」标签与永久记忆；离开已人工时顺带清掉该文件的历史选择记录 ——
+    状态只认当前生效的那一份，旧记录不再影响后续行为。
+    """
     path = (body.file or "").strip()
     status = (body.status or "").strip()
     if not path:
@@ -457,10 +486,15 @@ def set_task_status(body: TaskStatusBody):
             db.record_manual_done(path)
         except Exception:
             pass
-    elif status in ("pending", "manual_pending", "auto_ok"):
-        # 离开「已人工」时清掉永久记忆，否则下次扫描又会被排除
+    else:
+        if status in ("pending", "manual_pending", "auto_ok"):
+            # 离开「已人工」时清掉永久记忆，否则下次扫描又会被排除
+            try:
+                db.remove_manual_done(path)
+            except Exception:
+                pass
         try:
-            db.remove_manual_done(path)
+            db.drop_decision(path)   # 旧的选择/跳过记录不再参与判断
         except Exception:
             pass
     if db.set_status(path, status) == 0:
@@ -476,8 +510,7 @@ def scrub_file(file: str):
     歌词不在这里返回正文（体积大），只给出候选列表，点选时再按 song_id 取。
     """
     import musicmeta.writer as _w
-    if not os.path.isfile(file):
-        raise HTTPException(400, f"文件不存在: {file}")
+    _require_in_music_dir(file)
     cfg = db.get_config()
     active = active_fields(cfg)
 
@@ -547,7 +580,6 @@ def scrub_file(file: str):
 
     return {
         "file": file, "name": os.path.basename(file),
-        "audio": f"api/stream/{file}",
         "duration": scheduler._file_duration(file),
         "active_fields": active,
         "queries": res.queries,
@@ -599,8 +631,19 @@ def stats():
 
 @app.post("/api/run")
 def run():
+    """开始刮削（刮全部「待处理」）。没跑起来时如实说明原因，界面照实提示。"""
+    if scheduler.scraper_running():
+        return {"started": False, "reason": "已有刮削在运行中"}
+    cfg = db.get_config()
+    if not scheduler.resolve_sources(cfg):
+        return {"started": False,
+                "reason": "没有可用的数据源插件：请在设置里勾选已安装的插件（插件放到插件目录后需重启应用）"}
+    pending = db.count_tasks("pending")
+    if not pending:
+        return {"started": False, "reason": "没有待刮削的任务：先点「扫描目录」"}
     ok = scheduler.start_scraper()
-    return {"started": ok}
+    return {"started": ok, "count": pending,
+            "reason": "" if ok else "启动失败：已有刮削在运行中"}
 
 
 @app.post("/api/stop")
@@ -630,20 +673,32 @@ def reprocess_pending():
         rows = c.execute("SELECT path FROM tasks WHERE status='manual_pending'").fetchall()
     paths = [r["path"] for r in rows]
     n = db.requeue_status("manual_pending")
-    ok = scheduler.start_scraper(paths) if paths else False
-    return {"requeued": n, "started": ok}
+    if not paths:
+        return {"requeued": 0, "started": False, "reason": "待人工队列是空的"}
+    if not scheduler.resolve_sources(db.get_config()):
+        return {"requeued": n, "started": False,
+                "reason": "没有可用的数据源插件：请在设置里勾选已安装的插件"}
+    ok = scheduler.start_scraper(paths)
+    return {"requeued": n, "started": ok,
+            "reason": "" if ok else "启动失败：已有刮削在运行中"}
 
 
 @app.post("/api/scrape-pending")
 def scrape_pending():
     """只刮削当前处于「待处理(pending)」状态的文件（不涉及其它状态）。"""
+    if scheduler.scraper_running():
+        return {"started": False, "count": 0, "reason": "已有刮削在运行中"}
     with db.connect() as c:
         rows = c.execute("SELECT path FROM tasks WHERE status='pending'").fetchall()
     paths = [r["path"] for r in rows]
     if not paths:
-        return {"started": False, "count": 0}
+        return {"started": False, "count": 0, "reason": "没有待处理的文件"}
+    if not scheduler.resolve_sources(db.get_config()):
+        return {"started": False, "count": len(paths),
+                "reason": "没有可用的数据源插件：请在设置里勾选已安装的插件"}
     ok = scheduler.start_scraper(paths)
-    return {"started": ok, "count": len(paths)}
+    return {"started": ok, "count": len(paths),
+            "reason": "" if ok else "启动失败：已有刮削在运行中"}
 
 
 class RenameBody(BaseModel):
@@ -657,9 +712,7 @@ def rename_file(body: RenameBody):
 
     搜索匹配依赖文件名（歌曲名-歌手），结果不对时改文件名后重新搜索即可。
     """
-    old = body.file
-    if not os.path.isfile(old):
-        raise HTTPException(400, f"文件不存在: {old}")
+    old = _require_in_music_dir(body.file)   # 统一前置闸：只动音乐目录内的文件
     name = os.path.basename(body.new_name).strip()
     if not name or name in (".", "..") or "/" in name or "\\" in name:
         raise HTTPException(400, "文件名不合法")
@@ -692,11 +745,17 @@ class BatchDecideBody(BaseModel):
 
 @app.post("/api/decide/batch")
 def decide_batch(body: BatchDecideBody):
-    """批量处理整个人工队列：best=按最高分候选写入，skip=全部跳过。"""
+    """批量处理整个人工队列：best=按最高分候选写入，skip=全部跳过。
+
+    best 需要「启用写入」：没启用就没有任何东西可写，直接拒绝，
+    不再出现「队列被清空、文件一个字没改」的假完成。
+    写入成功记为「自动写入」——「已人工」只由人工逐条操作产生。
+    """
     cfg = db.get_config()
-    src = None
-    if cfg.get("write_enabled") == "1" and body.mode == "best":
-        src = _resolve_src("", float(cfg.get("min_interval", "0.3")))
+    if body.mode == "best" and cfg.get("write_enabled") != "1":
+        raise HTTPException(400, "未启用写入：批量按最高分候选写入前，请先在设置里勾选「启用写入」")
+    src = _resolve_src("", float(cfg.get("min_interval", "0.3"))) \
+        if body.mode == "best" else None
     done = chosen = skipped = 0
     for t in db.list_tasks("manual_pending", limit=100000):
         path = t["path"]
@@ -705,17 +764,17 @@ def decide_batch(body: BatchDecideBody):
             if not cands:
                 continue  # 无候选的留在队列
             top = cands[0]
-            if src is not None:
-                from musicmeta.sources.base import SongMeta
-                meta = SongMeta(
-                    title=top["title"], artist=top["artist"],
-                    album=top["album"], date=top["year"],
-                    song_id=top["songmid"], album_id=top["albummid"])
-                try:
-                    scheduler._write_fields(path, meta, src, cfg)
-                except Exception:
-                    continue  # 写入失败的不标记，留给人工
-            db.decide(path, top["songmid"], skip=False)
+            from musicmeta.sources.base import SongMeta
+            meta = SongMeta(
+                title=top["title"], artist=top["artist"],
+                album=top["album"], date=top["year"],
+                song_id=top["songmid"], album_id=top["albummid"])
+            try:
+                w = scheduler._write_fields(path, meta, src, cfg)
+            except Exception:
+                continue  # 写入失败的不标记，留给人工
+            db.decide(path, top["songmid"], skip=False)      # 状态 → 自动写入
+            db.set_status(path, "auto_ok", written=",".join(w))
             chosen += 1
         else:
             db.decide(path, "", skip=True)
@@ -732,12 +791,7 @@ def stream_audio(file: str):
 
     仅允许播放已授权音乐目录内的文件；支持 Range（浏览器可拖动进度）。
     """
-    if not os.path.isfile(file):
-        raise HTTPException(404, "文件不存在")
-    root = os.path.abspath(db.get_config().get("music_dir", "") or "/")
-    f = os.path.abspath(file)
-    if not f.startswith(root + os.sep) and f != root:
-        raise HTTPException(403, "文件不在已配置的音乐目录内")
+    _require_in_music_dir(file)
     import mimetypes
     mt = mimetypes.guess_type(file)[0] or "application/octet-stream"
     return FileResponse(file, media_type=mt, filename=os.path.basename(file))
@@ -750,12 +804,7 @@ def embedded_cover(file: str):
     只允许读取已配置音乐目录内的文件；封面多为几百 KB，前端用小图显示即可。
     """
     import musicmeta.writer as _w
-    if not os.path.isfile(file):
-        raise HTTPException(404, "文件不存在")
-    root = os.path.abspath(db.get_config().get("music_dir", "") or "/")
-    f = os.path.abspath(file)
-    if not f.startswith(root + os.sep) and f != root:
-        raise HTTPException(403, "文件不在已配置的音乐目录内")
+    _require_in_music_dir(file)
     try:
         data = _w.read_picture(file)
     except Exception:
@@ -991,15 +1040,16 @@ class FieldWriteBody(BaseModel):
 
 @app.post("/api/field-write")
 def field_write(body: FieldWriteBody):
-    """写入单个元数据字段（手动编辑或应用刮削候选值）。
+    """写入单个元数据字段（手动刮削窗口逐条修改/应用候选值）。
 
     field: title/artist/album/album_artist/year/genre/track/track_total/disc/
            publisher/language/comment/cover/lyrics
     cover 传图片 URL（下载写入）；lyrics 传 LRC 文本；其余传文本。
+
+    这是「人工逐条」的写文件动作：写入模式开启时会记入永久记忆，
+    并把该任务标成「已人工」（标签与记忆同时生效，重扫不会再来刮它）。
     """
-    path = body.file
-    if not os.path.isfile(path):
-        raise HTTPException(400, f"文件不存在: {path}")
+    path = _require_in_music_dir(body.file)   # 统一前置闸：只动音乐目录内的文件
     from musicmeta import writer as _w
     from musicmeta.sources.base import SongMeta
     field = body.field.strip()
@@ -1039,10 +1089,12 @@ def field_write(body: FieldWriteBody):
     scheduler._restore_owner(path)
     # 标签已变更：使该文件的过滤缓存/标签缓存失效（修复字段后从过滤器消失）
     _invalidate_filter_cache(path)
-    # 手动编辑 + 写模式开启 → 永久记忆（后续刮削排除）
+    # 手动逐条写入 + 写入模式开启 → 永久记忆 + 打「已人工」标签
+    # （「已人工」只由人工逐条操作产生；批量/补写不会产生这个标签）
     if cfg.get("write_enabled") == "1":
         try:
             db.record_manual_done(path)
+            db.set_status(path, "manual_done", error=db.MANUAL_NOTE)
         except Exception:
             pass
     return {"ok": True, "field": field}

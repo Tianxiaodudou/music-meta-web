@@ -270,13 +270,22 @@ def update_task_status(path: str, status: str, *, score: Optional[float] = None,
             (status, score, title, artist, album, year, error, written, now, path))
 
 
-def set_status(path: str, status: str, error: str = "") -> int:
-    """只改任务状态（保留匹配结果/得分/已写入等字段），返回受影响行数。"""
+def set_status(path: str, status: str, error: str = "",
+               written: Optional[str] = None) -> int:
+    """只改任务状态（保留匹配结果/得分/已匹配的歌名歌手等字段），返回受影响行数。
+
+    written 为 None 时不动该列；传入时一并更新（用于「补写/批量写入」记录写了哪些字段）。
+    """
     now = time.strftime("%Y-%m-%d %H:%M:%S")
     with connect() as c:
-        cur = c.execute(
-            "UPDATE tasks SET status=?, error=?, updated_at=? WHERE path=?",
-            (status, error, now, path))
+        if written is None:
+            cur = c.execute(
+                "UPDATE tasks SET status=?, error=?, updated_at=? WHERE path=?",
+                (status, error, now, path))
+        else:
+            cur = c.execute(
+                "UPDATE tasks SET status=?, error=?, written=?, updated_at=? "
+                "WHERE path=?", (status, error, written, now, path))
         return cur.rowcount
 
 
@@ -583,15 +592,30 @@ def get_candidates(file_path: str) -> List[dict]:
 
 
 def decide(file_path: str, songmid: str, skip: bool = False) -> None:
+    """留档一次「选定/跳过」，并把任务改成当前生效的状态。
+
+    注意：「已人工」标签与永久记忆只由人工逐条操作产生（队列里指定状态、
+    手动刮削窗口写字段），批量处理与补写**不产生**已人工 ——
+    写入成功记为 auto_ok（自动写入），跳过记为 skipped。
+    """
     now = time.strftime("%Y-%m-%d %H:%M:%S")
     with connect() as c:
         c.execute(
             "INSERT OR REPLACE INTO decisions(file_path, songmid, decided_at) "
             "VALUES(?,?,?)",
             (file_path, "" if skip else songmid, now))
-        status = "skipped" if skip else "manual_done"
+        status = "skipped" if skip else "auto_ok"
         c.execute("UPDATE tasks SET status=?, updated_at=? WHERE path=?",
                   (status, now, file_path))
+
+
+def drop_decision(file_path: str) -> None:
+    """清掉该文件的选择记录（人工改状态/重新排队时调用）。
+
+    历史状态不参与后续判断，留着只会让「补写为什么跳过」这类问题无迹可循。
+    """
+    with connect() as c:
+        c.execute("DELETE FROM decisions WHERE file_path=?", (file_path,))
 
 
 def get_decision(file_path: str) -> Optional[dict]:
@@ -622,11 +646,16 @@ def retry_errors() -> int:
 
 
 def requeue_status(status: str) -> int:
-    """把某状态的任务恢复为 pending 并清空其候选（用于整队列重刮）。"""
+    """把某状态的任务恢复为 pending 并清空其候选（用于整队列重刮）。
+
+    同时清掉这些任务的选择/跳过记录：重刮就是从当前状态重新开始，
+    旧记录不该再影响后续判断。
+    """
     with connect() as c:
         rows = c.execute("SELECT path FROM tasks WHERE status=?", (status,)).fetchall()
         for r in rows:
             c.execute("DELETE FROM candidates WHERE file_path=?", (r["path"],))
+            c.execute("DELETE FROM decisions WHERE file_path=?", (r["path"],))
         cur = c.execute(
             "UPDATE tasks SET status='pending', error=NULL WHERE status=?", (status,))
         return cur.rowcount

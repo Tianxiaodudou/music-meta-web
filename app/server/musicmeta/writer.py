@@ -374,6 +374,14 @@ def read_tags(path: str) -> Dict[str, str]:
         # 优先取精确的 date（如 QQ 专辑日期），YEAR 只作兜底
         if "date" not in out and "year" in out:
             out["date"] = out["year"]
+        # mp3/ape 的曲目号是 "7/12" 形式（写入时也是这么合并的），这里拆回两个字段，
+        # 与 flac/ogg 的「曲目号 / 总曲目」读法保持一致
+        track = out.get("track") or ""
+        if "/" in track:
+            head, _, tail = track.partition("/")
+            out["track"] = head.strip()
+            if tail.strip():
+                out.setdefault("track_total", tail.strip())
     except Exception:
         return {}
     return out

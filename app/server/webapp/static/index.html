@@ -1249,7 +1249,14 @@ async function scan(){
     msg(m); await loadStats(); await loadQueue();
   }catch(e){ msg("扫描失败：" + (e.message||e)); }
 }
-async function run(){ await jsonPost("/api/run", {}); msg("刮削已启动"); poll(); }
+async function run(){
+  try{
+    const r = await jsonPost("/api/run", {});
+    if(r.started) msg(`刮削已启动${r.count ? "（"+r.count+" 首待处理）" : ""}`);
+    else msg("没有启动：" + (r.reason || "未知原因"));
+    poll();
+  }catch(e){ msg("启动失败：" + (e.message||e)); }
+}
 async function stop(){ await jsonPost("/api/stop", {}); msg("已暂停"); }
 async function resetTasks(){
   if(!confirm("清空任务列表（只清任务，不改音乐文件）？")) return;
@@ -1259,20 +1266,25 @@ async function resetTasks(){
 async function scrapePending(){
   try{
     const r = await jsonPost("/api/scrape-pending", {});
-    msg(r.count ? `已开始刮削 ${r.count} 首` : "没有待刮削的文件"); poll();
+    if(r.started) msg(`已开始刮削 ${r.count} 首`);
+    else msg("没有启动：" + (r.reason || "没有待刮削的文件"));
+    poll();
   }catch(e){ msg("操作失败：" + (e.message||e)); }
 }
 async function reprocessPending(){
   try{
     const r = await jsonPost("/api/reprocess-pending", {});
-    msg(`已重新排队 ${r.requeued} 首`); poll();
+    msg(r.started ? `已重新排队并开始刮削 ${r.requeued} 首`
+                  : `已重新排队 ${r.requeued} 首，但没启动：` + (r.reason || "未知原因"));
+    poll();
   }catch(e){ msg("操作失败：" + (e.message||e)); }
 }
 async function batchBest(){
-  if(!confirm("把「待人工」队列里每首歌的最高分候选直接写入？")) return;
+  if(!confirm("把「待人工」队列里每首歌的最高分候选直接写入？\n\n需要先在设置里「启用真实写入」；批量写入记为「自动写入」，只有你逐条手动确认过的才会标「已人工」。")) return;
   try{
     const r = await jsonPost("/api/decide/batch", {mode:"best"});
-    msg(`批量完成：${r.chosen} 首已写入`); await loadStats(); await loadQueue();
+    msg(`批量完成：${r.chosen} 首已写入（记为「自动写入」；逐条手动确认过的才会标「已人工」）`);
+    await loadStats(); await loadQueue();
   }catch(e){ msg("批量操作失败：" + (e.message||e)); }
 }
 async function batchSkip(){
