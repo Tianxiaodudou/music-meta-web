@@ -144,8 +144,12 @@
   .scrub-head h3 { margin:0; font-size:15px; word-break:break-all; }
   .player { border:1px solid #e3e6ea; border-radius:8px; padding:8px 10px; margin:8px 0; }
   .player audio { width:100%; }
-  .player .lrc-box { margin-top:6px; height:170px; overflow:auto; background:#f8f9fa; border-radius:6px;
-                     padding:6px 10px; font-size:12.5px; line-height:1.75; }
+  .player .lrc-tools { display:flex; align-items:center; gap:10px; margin-top:6px; flex-wrap:wrap; }
+  .player .lrc-tools button { font-size:12px; padding:3px 10px; }
+  .player .lrc-box { margin-top:4px; height:190px; overflow:auto; background:#f8f9fa; border-radius:6px;
+                     padding:6px 10px; font-size:13px; line-height:2.0; }
+  /* 上下留白：让「当前行」能真正滚到中间 */
+  .player .lrc-box::before, .player .lrc-box::after { content:""; display:block; height:70px; }
   .lrc-line { padding:1px 5px; border-radius:3px; cursor:pointer; }
   .lrc-line:hover { background:#eef6ff; }
   .lrc-line.active { color:var(--accent); font-weight:700; background:#e7f3ff; }
@@ -388,7 +392,11 @@
     </div>
     <div class="player">
       <audio id="scAudio" controls></audio>
-      <div class="muted" style="margin-top:5px" id="scLrcHint"></div>
+      <div class="lrc-tools">
+        <span class="muted" id="scLrcHint">（加载中…）</span>
+        <button class="secondary" id="scLrcSwitch" style="display:none"
+                onclick="switchLrcMode()">用候选歌词同步</button>
+      </div>
       <div class="lrc-box" id="scLrc">（加载中…）</div>
     </div>
     <div id="scFields"></div>
@@ -868,8 +876,6 @@ async function doDeleteTask(deleteFile){
 
 // ---------------- 手动刮削窗口 ----------------
 let sc = {file:"", data:null, lyrics:{value:"", source:"", song_id:"", title:"", artist:""}};
-let lrcLines = [], lrcEls = [];
-
 async function openScrub(file){
   sc = {file, data:null, lyrics:{value:"", source:"", song_id:"", title:"", artist:""}};
   $("scName").textContent = "手动刮削： " + file.split("/").pop();
@@ -891,6 +897,7 @@ async function openScrub(file){
 function closeScrub(){
   const a = $("scAudio");
   try{ a.pause(); }catch(e){}
+  lrcFollow = true; lrcMode = "embedded"; lrcLines = []; lrcEls = [];
   a.removeAttribute("src");
   $("scrubModal").classList.remove("open");
   document.body.style.overflow = "";
@@ -905,12 +912,23 @@ function renderScrub(){
   $("scMeta").textContent =
     `候选 ${maxCands} 条/字段｜通过校验 ${d.verified} 条｜` +
     `候选词：${(d.queries||[]).join(" / ") || "—"}`;
-  // 播放器 + 内嵌歌词同步
+  // 播放器 + 歌词同步（打开窗口即开始播放）
   const a = $("scAudio");
   a.src = BASE + "api/stream/" + encodeURIComponent(sc.file);
-  const embedded = d.lyrics.current || "";
-  $("scLrcCur").value = embedded;
-  renderLrcPlayer(embedded);
+  lrcEmbedded = d.lyrics.current || "";
+  lrcCand = "";
+  lrcMode = "embedded";
+  lrcFollow = true;
+  $("scLrcCur").value = lrcEmbedded;
+  // 播放进度相关事件都重算高亮：播放中/暂停/拖动/加载完成
+  a.onloadedmetadata = applyLrcHighlight;
+  a.ontimeupdate = applyLrcHighlight;
+  a.onseeked = applyLrcHighlight;
+  a.onplay = applyLrcHighlight;
+  renderLrcPlayer();
+  a.play().catch(() => {
+    $("scLrcHint").textContent = "浏览器阻止了自动播放：点一下播放按钮即可（歌词会跟着走）";
+  });
   // 字段行（歌词由下方对比框负责）
   $("scFields").innerHTML = d.fields.map(fieldRowHtml).join("") ||
     `<div class="empty">当前没有生效字段，请到设置里勾选</div>`;
@@ -1018,14 +1036,22 @@ function parseLrc(lrc){
   }
   return out.filter(x => x.text).sort((a,b)=>a.t-b.t);
 }
-function renderLrcPlayer(embedded){
+let lrcLines = [], lrcEls = [], lrcFollow = true, lrcProgScroll = false;
+let lrcEmbedded = "", lrcCand = "", lrcMode = "embedded";
+
+/** 当前用于同步的歌词文本（内嵌 / 候选） */
+function lrcActiveText(){ return lrcMode === "cand" ? lrcCand : lrcEmbedded; }
+
+function renderLrcPlayer(){
   const box = $("scLrc");
-  const lines = parseLrc(embedded);
+  const text = lrcActiveText();
+  const lines = parseLrc(text);
   lrcLines = []; lrcEls = [];
+  updateLrcTools(lines.length);
   if(!lines.length){
-    box.innerHTML = embedded
-      ? `<div class="muted">（文件内歌词无时间轴，无法同步；全文见下方「原有内嵌歌词」）</div>`
-      : `<div class="muted">（该文件没有内嵌歌词）</div>`;
+    box.innerHTML = text
+      ? `<div class="muted">（${lrcMode === "cand" ? "候选" : "内嵌"}歌词没有时间轴，无法同步；全文见下方文本框）</div>`
+      : `<div class="muted">（没有可同步的歌词：该文件内嵌歌词为空）</div>`;
     return;
   }
   lrcLines = lines;
@@ -1034,21 +1060,58 @@ function renderLrcPlayer(embedded){
   lrcEls = Array.from(box.querySelectorAll(".lrc-line"));
   lrcEls.forEach((el, i) => el.onclick = () => {
     const a = $("scAudio");
-    try{ a.currentTime = lrcLines[i].t; a.play(); }catch(e){}
+    lrcFollow = true;                       // 点了歌词行 = 想跟着看，恢复自动居中
+    updateLrcTools(lines.length);           // 提示文案同步刷新（此前会停留在“已按你的滚动位置”）
+    try{ a.currentTime = lrcLines[i].t; }catch(e){}
+    applyLrcHighlight();
+    try{ a.play().catch(() => {}); }catch(e){}
   });
-  const a = $("scAudio");
-  a.ontimeupdate = () => {
-    if(!lrcLines.length) return;
-    let idx = 0;
-    for(let i=0;i<lrcLines.length;i++){ if(lrcLines[i].t <= a.currentTime) idx = i; else break; }
-    lrcEls.forEach((el,i)=> el.className = "lrc-line" + (i===idx ? " active" : ""));
-    const el = lrcEls[idx];
-    if(el && box.scrollHeight > box.clientHeight){
-      const want = el.offsetTop - box.clientHeight/2 + el.offsetHeight/2;
-      box.scrollTop = Math.max(0, want);
+  // 用户手动滚动 → 取消自动居中（此后完全按用户的滚动位置显示）
+  box.onscroll = () => {
+    if(lrcProgScroll) return;               // 忽略我们自己造成的滚动
+    if(lrcFollow){
+      lrcFollow = false;
+      updateLrcTools(lines.length);
     }
   };
-  $("scLrcHint").textContent = `内嵌歌词共 ${lines.length} 行（点击任意行可跳转播放）`;
+  // 立即高亮一次（打开窗口、暂停、拖动进度后都能对上）
+  applyLrcHighlight();
+}
+
+/** 依据播放进度高亮当前行；lrcFollow=true 时把它滚到中间 */
+function applyLrcHighlight(){
+  if(!lrcLines.length) return;
+  const a = $("scAudio"), box = $("scLrc");
+  let idx = 0;
+  for(let i=0;i<lrcLines.length;i++){ if(lrcLines[i].t <= (a.currentTime||0)) idx = i; else break; }
+  lrcEls.forEach((el,i)=> el.className = "lrc-line" + (i===idx ? " active" : ""));
+  const el = lrcEls[idx];
+  if(!el || !lrcFollow) return;
+  const want = el.offsetTop - box.clientHeight/2 + el.offsetHeight/2;
+  lrcProgScroll = true;
+  box.scrollTop = Math.max(0, want);
+  setTimeout(() => { lrcProgScroll = false; }, 120);   // 程序化滚动不触发取消跟随
+}
+
+function updateLrcTools(n){
+  const hint = $("scLrcHint");
+  const btn = $("scLrcSwitch");
+  const which = lrcMode === "cand" ? "候选歌词" : "内嵌歌词";
+  if(btn){
+    const canSwitch = lrcMode === "embedded" ? !!lrcCand : !!lrcEmbedded;
+    btn.style.display = canSwitch ? "inline-block" : "none";
+    btn.textContent = lrcMode === "embedded" ? "用候选歌词同步" : "切回内嵌歌词";
+  }
+  if(!n){ hint.textContent = `同步歌词：${which}（无可同步内容）`; return; }
+  hint.textContent = lrcFollow
+    ? `同步歌词：${which} 共 ${n} 行（正在跟随播放；滚动歌词可取消自动居中）`
+    : `同步歌词：${which} 共 ${n} 行（已按你的滚动位置显示，点任意歌词行恢复跟随）`;
+}
+
+function switchLrcMode(){
+  lrcMode = lrcMode === "embedded" ? "cand" : "embedded";
+  lrcFollow = true;
+  renderLrcPlayer();
 }
 
 function toggleLyricsMenu(ev){
@@ -1104,7 +1167,13 @@ async function pickLyrics(idx){
     const d = await api("/api/cand-lyrics?" + q.toString());
     sc.lyrics = {value:d.lyrics || "", source:c.source, song_id:c.song_id,
                  title:c.title, artist:c.artist};
-    $("scLrcCand").value = d.lyrics || "";
+    lrcCand = d.lyrics || "";
+    $("scLrcCand").value = lrcCand;
+    // 内嵌歌词没有时间轴时，选完候选歌词直接切到「候选歌词」同步
+    if(lrcMode === "embedded" && !parseLrc(lrcEmbedded).length && parseLrc(lrcCand).length){
+      lrcMode = "cand"; lrcFollow = true;
+    }
+    renderLrcPlayer();
   }catch(e){
     sc.lyrics = {value:"", source:"", song_id:"", title:"", artist:""};
     $("scLrcCand").value = "";
@@ -1118,8 +1187,9 @@ async function writeLyrics(){
   try{
     await jsonPost("/api/field-write", {file:sc.file, field:"lyrics", value});
     msg("已写入歌词");
+    lrcEmbedded = value;
     $("scLrcCur").value = value;
-    renderLrcPlayer(value);
+    if(lrcMode === "embedded") renderLrcPlayer(); else updateLrcTools(parseLrc(lrcActiveText()).length);
   }catch(e){ msg("写入失败：" + (e.message||e)); }
 }
 
