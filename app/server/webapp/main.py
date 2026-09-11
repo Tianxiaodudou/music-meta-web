@@ -511,8 +511,21 @@ def scrub_file(file: str):
                        "current": current, "current_url": current_url,
                        "candidates": cands})
 
+    def _lrc_hint(m) -> str:
+        """歌词候选的「字段内容」摘要：插件已带歌词时取首句（无需额外请求）。"""
+        lrc = (m.extra.get("lyrics") or "").strip()
+        if not lrc:
+            return ""
+        for raw in lrc.split("\n"):
+            line = raw.strip()
+            if not line or line.startswith("["):      # 跳过 LRC 时间标签/元信息
+                continue
+            return line[:40]
+        return ""
+
     lyrics_cands = [{"value": "", "source": m.source, "title": m.title,
-                     "artist": m.artist, "song_id": m.song_id}
+                     "artist": m.artist, "song_id": m.song_id,
+                     "hint": _lrc_hint(m)}
                     for m in metas if m.song_id]
 
     return {

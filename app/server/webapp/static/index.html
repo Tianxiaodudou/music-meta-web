@@ -108,13 +108,24 @@
   .rename-pop .rrow { display:flex; gap:8px; align-items:center; }
   .rename-pop input { flex:1; min-width:0; }
   /* 候选值下拉 */
-  .cand-menu { max-height:46vh; overflow:auto; max-width:min(720px,94vw); min-width:320px; }
-  .cand-menu .cm-item.cover { flex-direction:row; align-items:flex-start; gap:10px; }
-  .cand-menu .cm-thumb { width:48px; height:48px; border-radius:5px; object-fit:cover;
+  /* 候选菜单：多列自适应（列宽 ~200px，随窗口宽度自动增减列数） */
+  .cand-menu { max-height:48vh; overflow:auto; width:min(980px,94vw);
+               display:grid; grid-template-columns:repeat(auto-fill,minmax(196px,1fr));
+               gap:4px; padding:8px; align-content:start; }
+  .cand-menu .cm-item { flex-direction:row; align-items:center; gap:8px;
+                        padding:5px 8px; min-width:0; }
+  .cand-menu .cm-val { font-size:12.5px; overflow:hidden; text-overflow:ellipsis;
+                       white-space:nowrap; min-width:0; flex:1; }
+  .cand-menu .cm-src { font-size:11px; color:#93a1b3; background:#f2f5f9;
+                       border-radius:9px; padding:1px 7px; flex-shrink:0; }
+  .cand-menu .cm-item.cover { flex-direction:row; align-items:center; }
+  .cand-menu .cm-thumb { width:38px; height:38px; border-radius:5px; object-fit:cover;
                          background:#eee; flex-shrink:0; }
   .cand-menu .cm-thumb.empty { display:block; }
-  .cand-menu .cm-body { display:flex; flex-direction:column; gap:2px; min-width:0; }
-  .cand-menu .cm-val.url { font-size:11.5px; color:#666; word-break:break-all; }
+  .cand-menu .cm-body { display:flex; align-items:center; min-width:0; flex:1; }
+  .cand-menu .cm-hint { font-size:12.5px; color:#333; overflow:hidden;
+                        text-overflow:ellipsis; white-space:nowrap; flex:1; min-width:0; }
+  .cand-menu .cm-hint.wait { color:#bbb; }
   .sr-candwrap { display:flex; align-items:center; gap:8px; width:100%; }
   .sr-candthumb { width:44px; height:44px; border-radius:4px; object-fit:cover; background:#eee; flex-shrink:0; }
   /* 「原有」封面的缩略图：窗口里只看个大概，别铺成大图 */
@@ -947,19 +958,17 @@ function toggleCandMenu(ev, key){
   if(toggleOff || !f) return;
   sc.menuKey = key;
   const isCover = f.special === "cover";
+  // 只显示「字段内容 + 来源」：不显示 URL、歌名、歌手等其它信息
   $("candMenu").innerHTML = f.candidates.length
     ? f.candidates.map((c, i) => isCover
-        ? `<div class="cm-item cover" onclick="pickCand('${key}', ${i})">
+        ? `<div class="cm-item cover" title="${esc(c.source)}" onclick="pickCand('${key}', ${i})">
              <img class="cm-thumb" src="${esc(c.value)}" alt=""
                   onerror="this.className='cm-thumb empty';this.removeAttribute('src')">
-             <div class="cm-body">
-               <span class="cm-src">${esc(c.source)}${c.title ? " · " + esc(c.title) : ""}${c.artist ? " - " + esc(c.artist) : ""}</span>
-               <span class="cm-val url">${esc(c.value)}</span>
-             </div>
+             <span class="cm-src">${esc(c.source)}</span>
            </div>`
-        : `<div class="cm-item" onclick="pickCand('${key}', ${i})">
+        : `<div class="cm-item" title="${esc(c.value)}" onclick="pickCand('${key}', ${i})">
              <span class="cm-val">${esc(c.value)}</span>
-             <span class="cm-src">${esc(c.source)}${c.title ? " · " + esc(c.title) : ""}${c.artist ? " - " + esc(c.artist) : ""}</span>
+             <span class="cm-src">${esc(c.source)}</span>
            </div>`).join("")
     : `<div class="cm-empty">该字段没有候选值（换个数据源或改文件名后重试）</div>`;
   placePop($("candMenu"), ev.currentTarget);
@@ -1051,12 +1060,38 @@ function toggleLyricsMenu(ev){
   sc.menuKey = "lyrics";
   $("candMenu").innerHTML = cs.length
     ? cs.map((c, i) =>
-        `<div class="cm-item" onclick="pickLyrics(${i})">
-           <span class="cm-val">${esc(c.title || "（无歌名）")}${c.artist ? " - " + esc(c.artist) : ""}</span>
-           <span class="cm-src">${esc(c.source)}（点选后取该候选歌词）</span>
+        `<div class="cm-item" title="点选后载入完整歌词" onclick="pickLyrics(${i})">
+           <span class="cm-hint${c.hint ? "" : " wait"}" id="lh_${i}">${c.hint ? esc(c.hint) : "读取中…"}</span>
+           <span class="cm-src">${esc(c.source)}</span>
          </div>`).join("")
     : `<div class="cm-empty">没有可选候选（先确认数据源已勾选）</div>`;
   placePop($("candMenu"), ev.currentTarget);
+  fillLyricsHints(cs);
+
+function fillLyricsHints(cs){
+  // 插件自带歌词的候选已在 hint 里；其余按需取首句（走应用层缓存，取过一次就不再请求）
+  const todo = cs.map((c, i) => ({c, i})).filter(x => !x.c.hint && x.c.song_id);
+  (async () => {
+    for(const {c, i} of todo){
+      const el = $("lh_" + i);
+      if(!el) return;                       // 菜单已被关掉
+      try{
+        const q = new URLSearchParams({song_id:c.song_id||"", source:c.source||"",
+                                       title:c.title||"", artist:c.artist||""});
+        const d = await api("/api/cand-lyrics?" + q.toString());
+        c.hint = (d.lyrics || "").split("\n")
+                  .map(l => l.replace(/\[[^\]]*\]/g, "").trim())
+                  .find(l => l) || "";
+      }catch(e){ c.hint = ""; }
+      const el2 = $("lh_" + i);
+      if(!el2) return;
+      el2.className = "cm-hint";
+      el2.textContent = c.hint ? (c.hint.length > 40 ? c.hint.slice(0, 40) : c.hint)
+                               : "（无歌词）";
+      el2.classList.toggle("wait", !c.hint);
+    }
+  })();
+}
 }
 async function pickLyrics(idx){
   const c = ((sc.data && sc.data.lyrics.candidates) || [])[idx];
