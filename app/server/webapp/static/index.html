@@ -108,10 +108,17 @@
   .rename-pop .rrow { display:flex; gap:8px; align-items:center; }
   .rename-pop input { flex:1; min-width:0; }
   /* 候选值下拉 */
-  /* 候选菜单：多列自适应（列宽 ~200px，随窗口宽度自动增减列数） */
-  .cand-menu { max-height:48vh; overflow:auto; width:min(980px,94vw);
-               display:grid; grid-template-columns:repeat(auto-fill,minmax(196px,1fr));
-               gap:4px; padding:8px; align-content:start; }
+  /* 候选菜单：容器只管定位/外观，多列网格交给内层 .cm-grid
+     （不要在这里写 display:grid —— 会被 .pop.open{display:block} 覆盖掉，
+      表现为「打开时是一根巨大的单列」） */
+  .cand-menu { width:min(760px,94vw); padding:8px 10px; }
+  .cand-menu .cm-head { display:flex; align-items:center; justify-content:space-between;
+                        gap:10px; padding-bottom:6px; margin-bottom:6px;
+                        border-bottom:1px solid #eef1f5; font-size:12.5px; color:#66707d; }
+  .cand-menu .cm-x { padding:1px 8px; font-size:12px; background:#eef1f5; color:#44506b; }
+  .cand-menu .cm-x:hover { background:#dde3ea; }
+  .cand-menu .cm-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(196px,1fr));
+                        gap:4px; max-height:44vh; overflow:auto; align-content:start; }
   .cand-menu .cm-item { flex-direction:row; align-items:center; gap:8px;
                         padding:5px 8px; min-width:0; }
   .cand-menu .cm-val { font-size:12.5px; overflow:hidden; text-overflow:ellipsis;
@@ -146,7 +153,8 @@
   .player audio { width:100%; }
   .player .lrc-tools { display:flex; align-items:center; gap:10px; margin-top:6px; flex-wrap:wrap; }
   .player .lrc-tools button { font-size:12px; padding:3px 10px; }
-  .player .lrc-box { margin-top:4px; height:190px; overflow:auto; background:#f8f9fa; border-radius:6px;
+  .player .lrc-box { position:relative; margin-top:4px; height:190px; overflow:auto;
+                     background:#f8f9fa; border-radius:6px;
                      padding:6px 10px; font-size:13px; line-height:2.0; }
   /* 上下留白：让「当前行」能真正滚到中间 */
   .player .lrc-box::before, .player .lrc-box::after { content:""; display:block; height:70px; }
@@ -220,7 +228,8 @@
       padding:8px 0; margin-bottom:8px; border-bottom:1px solid #e3e6ea;
     }
     /* 窄屏：把候选菜单最小列宽调小，手机也能排 2 列（此前只能 1 列） */
-    .cand-menu { grid-template-columns:repeat(auto-fill,minmax(146px,1fr)); width:96vw; }
+    .cand-menu { width:96vw; }
+    .cand-menu .cm-grid { grid-template-columns:repeat(auto-fill,minmax(146px,1fr)); }
     .cand-menu .cm-val { font-size:12px; }
     .cand-menu .cm-src { font-size:10.5px; padding:1px 6px; }
     .scrub-row .sr-name { width:60px; }
@@ -775,15 +784,26 @@ function placePop(el, anchor){
   const r = anchor.getBoundingClientRect();
   el.classList.add("open");
   const w = el.offsetWidth, h = el.offsetHeight;
-  let left = Math.min(r.left, window.innerWidth - w - 10);
-  let top = r.bottom + 6;
-  if(top + h > window.innerHeight - 8) top = Math.max(8, r.top - h - 6);
-  el.style.left = Math.max(8, left) + "px";
+  const m = 8, gap = 6;
+  // 水平：默认与按钮左对齐；右边放不下就改成与按钮右对齐（视觉上仍紧贴按钮）
+  let left = r.left;
+  if(left + w > window.innerWidth - m) left = r.right - w;
+  left = Math.max(m, Math.min(left, Math.max(m, window.innerWidth - w - m)));
+  // 垂直：默认在按钮下方；下方不够且上方够，就翻到按钮上方
+  let top = r.bottom + gap;
+  if(top + h > window.innerHeight - m && r.top - h - gap > m) top = r.top - h - gap;
+  top = Math.max(m, Math.min(top, Math.max(m, window.innerHeight - h - m)));
+  el.style.left = left + "px";
   el.style.top = top + "px";
 }
 document.addEventListener("click", ev => {
   const inside = ev.target.closest(".pop, .sttag, .dropdown");
   if(!inside) closeAllPops();
+});
+// 点候选菜单的空白区域（容器或网格本身）＝ 关闭，避免“菜单太大又关不掉”的观感
+document.addEventListener("click", ev => {
+  const t = ev.target;
+  if(t && (t.id === "candMenu" || t.classList.contains("cm-grid"))) closeAllPops();
 });
 window.addEventListener("resize", closeAllPops);
 // 注意：不要在 scroll 时关闭浮层 —— 手动刮削窗口里歌词会自动滚动（播放同步高亮），
@@ -981,7 +1001,9 @@ function toggleCandMenu(ev, key){
   sc.menuKey = key;
   const isCover = f.special === "cover";
   // 只显示「字段内容 + 来源」：不显示 URL、歌名、歌手等其它信息
-  $("candMenu").innerHTML = f.candidates.length
+  const head = (n) => `<div class="cm-head"><span>${esc(f.label)}候选（${n} 条）· 点选填入候选框</span>` +
+                      `<button class="cm-x" onclick="closeAllPops()">✕ 关闭</button></div>`;
+  $("candMenu").innerHTML = head(f.candidates.length) + '<div class="cm-grid">' + (f.candidates.length
     ? f.candidates.map((c, i) => isCover
         ? `<div class="cm-item cover" title="${esc(c.source)}" onclick="pickCand('${key}', ${i})">
              <img class="cm-thumb" src="${esc(c.value)}" alt=""
@@ -992,7 +1014,7 @@ function toggleCandMenu(ev, key){
              <span class="cm-val">${esc(c.value)}</span>
              <span class="cm-src">${esc(c.source)}</span>
            </div>`).join("")
-    : `<div class="cm-empty">该字段没有候选值（换个数据源或改文件名后重试）</div>`;
+    : `<div class="cm-empty">该字段没有候选值（换个数据源或改文件名后重试）</div>`) + '</div>';
   placePop($("candMenu"), ev.currentTarget);
 }
 function pickCand(key, idx){
@@ -1091,7 +1113,10 @@ function applyLrcHighlight(){
   lrcEls.forEach((el,i)=> el.className = "lrc-line" + (i===idx ? " active" : ""));
   const el = lrcEls[idx];
   if(!el || !lrcFollow) return;
-  const want = el.offsetTop - box.clientHeight/2 + el.offsetHeight/2;
+  // 用 getBoundingClientRect 求「该行相对歌词框」的偏移：offsetTop 在 static 容器下
+  // 会相对更外层的定位祖先，算出来的滚动位置是错的（表现就是「高亮对但不居中」）
+  const delta = el.getBoundingClientRect().top - box.getBoundingClientRect().top;
+  const want = box.scrollTop + delta - (box.clientHeight - el.offsetHeight) / 2;
   lrcProgScroll = true;
   box.scrollTop = Math.max(0, want);
   setTimeout(() => { lrcProgScroll = false; }, 120);   // 程序化滚动不触发取消跟随
@@ -1125,13 +1150,15 @@ function toggleLyricsMenu(ev){
   closeAllPops();
   if(toggleOff) return;
   sc.menuKey = "lyrics";
-  $("candMenu").innerHTML = cs.length
+  const head = `<div class="cm-head"><span>歌词候选（${cs.length} 条）· 点选后载入完整歌词</span>` +
+               `<button class="cm-x" onclick="closeAllPops()">✕ 关闭</button></div>`;
+  $("candMenu").innerHTML = head + '<div class="cm-grid">' + (cs.length
     ? cs.map((c, i) =>
         `<div class="cm-item" title="点选后载入完整歌词" onclick="pickLyrics(${i})">
            <span class="cm-hint${c.hint ? "" : " wait"}" id="lh_${i}">${c.hint ? esc(c.hint) : "读取中…"}</span>
            <span class="cm-src">${esc(c.source)}</span>
          </div>`).join("")
-    : `<div class="cm-empty">没有可选候选（先确认数据源已勾选）</div>`;
+    : `<div class="cm-empty">没有可选候选（先确认数据源已勾选）</div>`) + '</div>';
   placePop($("candMenu"), ev.currentTarget);
   fillLyricsHints(cs);
 
