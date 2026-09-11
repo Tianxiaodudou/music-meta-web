@@ -69,6 +69,18 @@ jobs:
       - name: Prepare release body from CHANGELOG
         run: |
           VER="${{ steps.version.outputs.version }}"
+          # 从 CHANGELOG.md 提取当前版本段落（## [x.y.z] - date 到下一个 ## [ 之前）
+          # 用 index 字符串匹配，避免版本号被 awk 当作正则字符类
+          SECTION="$(awk -v sec="## [${VER}]" '
+            index($0, sec)==1 {on=1; next}
+            on && index($0, "## [")==1 {exit}
+            on {print}
+          ' CHANGELOG.md)"
+          # 提取为空会生成没有更新日志的 Release，这里直接失败以便及时发现
+          if [ -z "$SECTION" ]; then
+            echo "::error::CHANGELOG.md 中找不到 ## [${VER}] 段落（Release 正文会为空）"
+            exit 1
+          fi
           {
             echo "## music-meta-web v${VER}"
             echo ""
@@ -79,16 +91,25 @@ jobs:
             echo ""
             echo "### 更新日志"
             echo ""
-            # 从 CHANGELOG.md 提取当前版本段落（## [x.y.z] - date 到下一个 ## [ 之前）
-            # 用 index 字符串匹配，避免版本号被 awk 当作正则字符类
-            awk -v sec="## [${VER}]" '
-              index($0, sec)==1 {on=1; next}
-              on && index($0, "## [")==1 {exit}
-              on {print}
-            ' CHANGELOG.md
+            echo "$SECTION"
           } > "$RUNNER_TEMP/body.md"
           echo "---- 生成的 Release 正文 ----"
           cat "$RUNNER_TEMP/body.md"
+
+      # action-gh-release 在 Release 已存在时不会更新正文（只覆盖资产），
+      # 导致重复推送同一 tag 时更新日志停留在首次生成的空版本。
+      # 这里先删除同名 Release，让每次发布都重新生成正文与资产（tag 本身保留）。
+      - name: Remove existing release for idempotent republish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER="${{ steps.version.outputs.version }}"
+          if gh release view "v${VER}" >/dev/null 2>&1; then
+            echo "Release v${VER} 已存在，先删除以便重新生成正文"
+            gh release delete "v${VER}" --yes
+          else
+            echo "无同名 Release，直接创建"
+          fi
 
       - name: Publish Release
         uses: softprops/action-gh-release@v2
