@@ -324,6 +324,18 @@
         <span class="muted" id="dirsSummary"></span>
       </div>
       <div class="row">
+        <label><b>人工处理记录</b>（永久记忆 + 人工选择：换机 / 备份用）</label>
+        <button class="secondary" onclick="exportManual()">⬇ 导出到本机</button>
+        <button class="secondary" onclick="$('impFile').click()">⬆ 导入记录文件</button>
+        <input type="file" id="impFile" accept=".json,application/json"
+               style="display:none" onchange="importManual(this)">
+        <span class="muted" id="manualSummary"></span>
+      </div>
+      <div class="row" style="margin-top:-4px">
+        <label class="muted">导出得到 JSON 文件（浏览器/手机/iOS/APP 都会存到当前设备的下载目录）；
+          导入时按文件路径合并，<b>不会删除</b>本机已有记录。</label>
+      </div>
+      <div class="row">
         <label><b>元数据源</b>（勾选可用的源，手动刮削按这里取候选）</label>
         <div class="dropdown">
           <button class="secondary" id="srcBtn" onclick="toggleSourceDrop(event)">选择数据源 ▾</button>
@@ -529,13 +541,6 @@
         命中缓存就不再请求服务器 —— 换目录等于清空缓存、下次会重新联网抓一遍。
         当前实际使用：<code id="cache_db_show">—</code><br>
         应用数据目录（由系统分配，存配置与任务库）：<code id="data_dir_show">—</code></div>
-      <div class="row" style="margin-top:8px">
-        <input type="text" id="merge_src" placeholder="要合并的旧缓存库路径（例如应用数据目录下的 musicmeta_cache.db）"
-               style="flex:1;min-width:240px">
-        <button class="secondary" onclick="mergeCache()">合并到当前缓存</button>
-      </div>
-      <div class="opt-d">换缓存目录后，可把旧目录的缓存合并进来，省去重新联网抓取；
-        同一首歌的缓存以「更晚过期」的那份为准。</div>
     </div>
     <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px">
       <button class="secondary" onclick="closeDirs()">取消</button>
@@ -586,6 +591,7 @@ const ST_LABEL = Object.fromEntries(STATUSES.map(s => [s.key, s.label]));
 
 let fieldDefs = [];                 // [{key,label,special}]（/api/fields）
 let activeFields = [];              // 生效字段 key 列表
+let manualStats = {};               // 人工处理记录统计（/api/config 返回）
 let qState = {status:"all", q:"", page:0};   // 队列当前过滤/分页
 let queueItems = [];                // 当前页任务（供菜单回调取数据）
 let delFile = "";
@@ -1349,21 +1355,56 @@ async function saveRisk(){
   }catch(e){ msg("保存失败：" + (e.message||e)); }
 }
 
+async function exportManual(){
+  try{
+    msg("正在生成导出文件…");
+    const r = await fetch(BASE + "api/manual-done/export", {method:"GET"});
+    if(!r.ok){
+      let d = await r.text();
+      try{ d = JSON.parse(d).detail || d; }catch(e){}
+      throw new Error(d || ("HTTP " + r.status));
+    }
+    const blob = await r.blob();
+    const name = `music-meta-manual-${new Date().toISOString().slice(0,19)
+                    .replace(/[-:T]/g,"")}.json`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    msg("已导出 " + name + "（存到当前设备的下载目录）");
+  }catch(e){ msg("导出失败：" + (e.message||e)); }
+}
+async function importManual(input){
+  const f = (input.files || [])[0];
+  if(!f) return;
+  const fd = new FormData();
+  fd.append("file", f);
+  try{
+    msg("正在导入 " + f.name + " …");
+    const r = await fetch(BASE + "api/manual-done/import", {method:"POST", body:fd});
+    const t = await r.text();
+    let d = {};
+    try{ d = JSON.parse(t); }catch(e){}
+    if(!r.ok) throw new Error(d.detail || t || ("HTTP " + r.status));
+    const md = d.manual_done || {}, dec = d.decisions || {};
+    msg(`导入完成：人工记录 新增 ${md.added||0} / 更新 ${md.updated||0}`
+        + `，选择记录 新增 ${dec.added||0} / 更新 ${dec.updated||0}`);
+    await loadConfig();
+  }catch(e){ msg("导入失败：" + (e.message||e)); }
+  finally{ input.value = ""; }
+}
+function updateManualSummary(){
+  const s = manualStats || {};
+  $("manualSummary").textContent =
+    `当前：人工记录 ${s.manual_done||0} 条 · 选择记录 ${s.decisions||0} 条`;
+}
 function updateDirsSummary(){
   const lib = ($("music_dir").value || "").trim();
   const plug = ($("plugins_dir").value || "").trim();
   const cache = ($("cache_dir").value || "").trim();
   $("dirsSummary").textContent =
     `音乐库 ${lib || "（未设置）"} · 插件 ${plug || "应用数据目录"} · 缓存 ${cache || "应用数据目录"}`;
-}
-async function mergeCache(){
-  const src = ($("merge_src").value || "").trim();
-  if(!src){ msg("请先填写要合并的旧缓存库路径"); return; }
-  if(!confirm("把\n" + src + "\n合并进当前缓存目录？\n（不会修改旧库，重复键保留较新的那份）")) return;
-  try{
-    const r = await jsonPost("/api/cache/merge", {path: src});
-    msg(`合并完成：旧库 ${r.source_rows} 条 → 当前缓存 ${r.before} → ${r.after} 条（新增 ${r.merged}）`);
-  }catch(e){ msg("合并失败：" + (e.message||e)); }
 }
 function openDirs(){ updateDirsSummary();
   $("dirsModal").classList.add("open"); document.body.style.overflow = "hidden"; }
@@ -1408,11 +1449,10 @@ async function loadConfig(){
     updateRiskSummary();
     // 目录设置（弹窗内）
     $("cache_dir").value = c.cache_dir || "";
+    manualStats = c.manual_stats || {};
+    updateManualSummary();
     $("cache_db_show").textContent = c.cache_db || "（未初始化）";
     $("data_dir_show").textContent = c.data_dir || "（由系统分配）";
-    if(!$("merge_src").value && c.data_dir){
-      $("merge_src").value = c.data_dir.replace(/\/+$/, "") + "/musicmeta_cache.db";
-    }
     updateDirsSummary();
     const mode = c.matching_mode === "fingerprint" ? "fingerprint" : "filename";
     const radio = document.querySelector(`input[name="matching_mode"][value="${mode}"]`);

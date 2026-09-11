@@ -224,51 +224,6 @@ def set_dir(path: str) -> None:
         _init()
 
 
-def merge_from(path: str) -> dict:
-    """把另一个 meta_cache 库的数据合并进当前缓存库。
-
-    - 同 key 时保留 expire 更大的那条（新数据胜出），不会把当前缓存改旧；
-    - 源库只读打开，合并后不会改动它；
-    - 当前缓存若是内存模式（目录不可写）则直接报错，避免“看起来合并成功了”。
-
-    返回 {"source_rows","before","after","merged"}。
-    """
-    path = (path or "").strip()
-    if not path:
-        raise ValueError("未指定缓存库路径")
-    if os.path.abspath(path) == os.path.abspath(_path()):
-        raise ValueError("源库就是当前缓存库，无需合并")
-    if not os.path.isfile(path):
-        raise FileNotFoundError(path)
-    with _lock:
-        _init()
-        if _conn is None:
-            raise RuntimeError("当前缓存是内存模式（目录不可写），无法合并")
-        # 先确认源库结构正常
-        probe = sqlite3.connect(path, timeout=15)
-        try:
-            probe.execute("SELECT key, expire, val FROM meta_cache LIMIT 1").fetchone()
-            source_rows = probe.execute(
-                "SELECT COUNT(*) FROM meta_cache").fetchone()[0]
-        finally:
-            probe.close()
-        before = _conn.execute("SELECT COUNT(*) FROM meta_cache").fetchone()[0]
-        _conn.execute("ATTACH DATABASE ? AS olddb", (path,))
-        try:
-            _conn.execute(
-                "INSERT INTO meta_cache(key, expire, val) "
-                "SELECT o.key, o.expire, o.val FROM olddb.meta_cache o "
-                "LEFT JOIN main.meta_cache m ON m.key = o.key "
-                "WHERE m.key IS NULL OR o.expire > m.expire "
-                "ON CONFLICT(key) DO UPDATE SET expire=excluded.expire, val=excluded.val")
-            _conn.commit()
-        finally:
-            _conn.execute("DETACH DATABASE olddb")
-        after = _conn.execute("SELECT COUNT(*) FROM meta_cache").fetchone()[0]
-        return {"source_rows": source_rows, "before": before, "after": after,
-                "merged": after - before}
-
-
 def init() -> None:
     """应用启动时调用一次：初始化并迁移旧缓存库。"""
     _init()

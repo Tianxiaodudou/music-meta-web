@@ -11,7 +11,9 @@ import threading
 import urllib.parse
 import time
 
-from fastapi import FastAPI, HTTPException, Response
+import json
+
+from fastapi import FastAPI, File, HTTPException, Response, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -112,6 +114,10 @@ def get_config():
     # 只读信息：应用数据目录 / 元数据缓存实际落盘位置（供「目录设置」展示）
     from musicmeta import cache as _mcache
     cfg["data_dir"] = (os.environ.get("TRIM_PKGVAR") or "").strip()
+    try:
+        cfg["manual_stats"] = db.manual_done_stats()
+    except Exception:
+        cfg["manual_stats"] = {}
     try:
         cfg["cache_db"] = _mcache.stats().get("db", "")
     except Exception:
@@ -757,29 +763,40 @@ def embedded_cover(file: str):
                     headers={"Cache-Control": "no-store"})
 
 
-class CacheMergeBody(BaseModel):
-    path: str
+@app.get("/api/manual-done/export")
+def manual_done_export():
+    """导出人工处理记录（永久记忆 + 人工选择）为 JSON 文件。
 
-
-@app.post("/api/cache/merge")
-def cache_merge(body: CacheMergeBody):
-    """把另一个元数据缓存库合并进当前缓存目录。
-
-    换过「元数据缓存目录」后，可以用它把旧目录的缓存继承过来，避免重新联网抓一遍。
-    同 key 保留 expire 更大的那条（即较新的数据胜出）。
+    直接在浏览器/手机/iOS/APP 内点一下就能保存到当前终端的下载目录。
     """
-    path = (body.path or "").strip()
-    if not path:
-        raise HTTPException(400, "请填写要合并的缓存库路径")
-    if not os.path.isfile(path):
-        raise HTTPException(400, f"缓存库不存在：{path}")
-    from musicmeta import cache as _mcache
+    import musicmeta.writer  # noqa: F401  (保持与其它接口一致的导入习惯)
+    data = db.export_manual_done()
+    body = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+    name = f"music-meta-manual-{time.strftime('%Y%m%d-%H%M%S')}.json"
+    return Response(
+        content=body, media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{name}"',
+                 "Cache-Control": "no-store"})
+
+
+@app.post("/api/manual-done/import")
+async def manual_done_import(file: UploadFile = File(...)):
+    """导入人工处理记录文件（由导出功能生成）：按文件路径合并，不删除本地已有记录。"""
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "文件是空的")
+    if len(raw) > 16 * 1024 * 1024:
+        raise HTTPException(400, "文件过大（>16MB），请确认是本应用导出的记录文件")
     try:
-        r = _mcache.merge_from(path)
+        data = json.loads(raw.decode("utf-8"))
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(500, f"合并失败：{exc}")
-    print(f"[cache] 合并缓存 {path} → {r}")
-    return r
+        raise HTTPException(400, f"不是有效的 JSON 文件：{exc}")
+    try:
+        stat = db.import_manual_done(data)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    print(f"[manual] 导入人工记录：{stat}")
+    return stat
 
 
 @app.get("/api/health")

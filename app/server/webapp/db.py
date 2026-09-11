@@ -316,6 +316,92 @@ def count_search(q: str, status: Optional[str] = None) -> int:
 
 # ---------------- 已人工处理永久记忆（哈希） ----------------
 
+def manual_done_stats() -> dict:
+    """人工处理记录条数（含人工选择记录）。"""
+    with connect() as c:
+        md = c.execute("SELECT COUNT(*) AS n FROM manual_done").fetchone()["n"]
+        dec = c.execute("SELECT COUNT(*) AS n FROM decisions").fetchone()["n"]
+    return {"manual_done": md, "decisions": dec}
+
+
+def export_manual_done() -> dict:
+    """导出人工处理记录（永久记忆 + 人工选择记录），供任意终端下载保存。"""
+    with connect() as c:
+        md = [dict(r) for r in c.execute(
+            "SELECT file_path, file_hash, done_at FROM manual_done "
+            "ORDER BY done_at")]
+        dec = [dict(r) for r in c.execute(
+            "SELECT file_path, songmid, decided_at FROM decisions "
+            "ORDER BY decided_at")]
+    return {"app": "music-meta-web", "schema": 1,
+            "exported_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "manual_done": md, "decisions": dec}
+
+
+def import_manual_done(data: dict) -> dict:
+    """导入人工处理记录：按 file_path 合并，不删除本地已有记录。
+
+    data 可以是导出文件本身，也可以只是 manual_done 数组。
+    返回 {"manual_done": {"added","updated","skipped"}, "decisions": {...}}。
+    """
+    if isinstance(data, list):
+        data = {"manual_done": data}
+    if not isinstance(data, dict):
+        raise ValueError("文件内容不是有效的导出格式")
+    md_rows = data.get("manual_done") or []
+    dec_rows = data.get("decisions") or []
+    if not isinstance(md_rows, list) or not isinstance(dec_rows, list):
+        raise ValueError("manual_done / decisions 必须是数组")
+
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    stat = {}
+    with connect() as c:
+        added = updated = skipped = 0
+        for r in md_rows:
+            if not isinstance(r, dict):
+                skipped += 1
+                continue
+            path = str(r.get("file_path") or r.get("path") or "").strip()
+            if not path:
+                skipped += 1
+                continue
+            exists = c.execute("SELECT 1 FROM manual_done WHERE file_path=?",
+                               (path,)).fetchone() is not None
+            c.execute(
+                "INSERT INTO manual_done(file_path, file_hash, done_at) VALUES(?,?,?) "
+                "ON CONFLICT(file_path) DO UPDATE SET file_hash=excluded.file_hash, "
+                "done_at=excluded.done_at",
+                (path, str(r.get("file_hash") or "").strip(),
+                 str(r.get("done_at") or "").strip() or now))
+            updated += 1 if exists else 0
+            added += 0 if exists else 1
+        stat["manual_done"] = {"added": added, "updated": updated,
+                               "skipped": skipped, "total": len(md_rows)}
+
+        added = updated = skipped = 0
+        for r in dec_rows:
+            if not isinstance(r, dict):
+                skipped += 1
+                continue
+            path = str(r.get("file_path") or r.get("path") or "").strip()
+            if not path:
+                skipped += 1
+                continue
+            exists = c.execute("SELECT 1 FROM decisions WHERE file_path=?",
+                               (path,)).fetchone() is not None
+            c.execute(
+                "INSERT INTO decisions(file_path, songmid, decided_at) VALUES(?,?,?) "
+                "ON CONFLICT(file_path) DO UPDATE SET songmid=excluded.songmid, "
+                "decided_at=excluded.decided_at",
+                (path, str(r.get("songmid") or ""), 
+                 str(r.get("decided_at") or "").strip() or now))
+            updated += 1 if exists else 0
+            added += 0 if exists else 1
+        stat["decisions"] = {"added": added, "updated": updated,
+                             "skipped": skipped, "total": len(dec_rows)}
+    return stat
+
+
 def file_sha256(path: str) -> str:
     """计算音乐文件内容 sha256（用于已人工处理的永久记忆与排除）。"""
     import hashlib
