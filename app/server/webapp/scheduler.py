@@ -27,25 +27,43 @@ from musicmeta.sources.registry import get_source
 from . import db
 
 
-def collect_audio_files(path: str, recursive: bool) -> List[str]:
-    """收集目录下的音频文件（仅文件名学习，不修改任何文件）。"""
+def collect_audio_files(path: str, recursive: bool, progress=None) -> List[str]:
+    """收集目录下的音频文件（仅文件名学习，不修改任何文件）。
+
+    :param progress: 可选回调 (found, scanned)：found=已找到的音频数，scanned=已看过的文件数。
+        目录很大时界面靠它显示「已扫描出 N 个音频（看过 M 个文件）」，不至于像没反应。
+    """
     found: List[str] = []
+    scanned = 0
+
+    def _tick() -> None:
+        if progress:
+            progress(len(found), scanned)
+
     if os.path.isfile(path):
         if os.path.splitext(path)[1].lower() in SUPPORTED_EXTS:
             found.append(path)
+            _tick()
         return found
     if not os.path.isdir(path):
         return found
     if recursive:
         for root, _dirs, files in os.walk(path):
             for f in files:
+                scanned += 1
                 if os.path.splitext(f)[1].lower() in SUPPORTED_EXTS:
                     found.append(os.path.join(root, f))
+                if scanned % 200 == 0:
+                    _tick()
     else:
         for f in os.listdir(path):
+            scanned += 1
             full = os.path.join(path, f)
             if os.path.isfile(full) and os.path.splitext(f)[1].lower() in SUPPORTED_EXTS:
                 found.append(full)
+            if scanned % 200 == 0:
+                _tick()
+    _tick()
     return sorted(found)
 
 

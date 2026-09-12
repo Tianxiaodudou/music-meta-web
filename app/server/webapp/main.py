@@ -192,6 +192,75 @@ def _apply_cache_dir(cfg: dict) -> None:
 class ScanBody(BaseModel):
     path: str | None = None
     recursive: bool | None = None
+    #: 同步等待扫描完成（默认否：立即返回，进度看 /api/scan-status）
+    wait: bool = False
+
+
+#: 扫描进度（后台线程写、接口读）。前端每隔不到一秒取一次，用来显示两段数量进度：
+#:   ① 列文件段：found=已扫描出的音频数、scanned=已看过的文件数
+#:   ② 命中记忆段：mem_done/mem_total=已比对个数、hits=命中处理记录的个数
+_scan_state = {
+    "started": False, "running": False, "phase": "", "path": "",
+    "total": 0,           # 收集到的音频文件数（列文件段结束时确定）
+    "scanned": 0,         # 已看过的文件数（含非音频）
+    "found": 0,           # 已找到的音频数（列文件过程中就往上跳）
+    "mem_total": 0,       # 需要比对处理记录的文件数（= total）
+    "mem_done": 0,        # 已比对个数（命中记忆段进度）
+    "stat_done": 0,       # 兼容旧字段：等于 mem_done
+    "hashed": 0,          # 已读内容算哈希的个数（兜底识别时才有）
+    "hits": 0,            # 命中处理记录的个数
+    "added": 0, "manual_done": 0, "memory": 0, "by_status": {},
+    "started_at": 0.0, "elapsed": 0.0, "finished_at": 0.0, "error": "",
+}
+_scan_lock = threading.Lock()
+
+
+def _scan_worker(path: str, recursive: bool) -> dict:
+    """执行一次扫描：收集文件 → 比对处理记录 → 入列。全程更新 _scan_state 供界面显示进度。"""
+    global _scan_state
+    t0 = time.time()
+    try:
+        with _scan_lock:
+            _scan_state.update(running=True, phase="collecting", path=path, error="",
+                               scanned=0, found=0, total=0, mem_done=0, mem_total=0,
+                               stat_done=0, hashed=0, hits=0, added=0, memory=0)
+
+        def on_collect(found, scanned):
+            with _scan_lock:
+                _scan_state.update(found=found, scanned=scanned)
+
+        files = scheduler.collect_audio_files(path, recursive, progress=on_collect)
+        with _scan_lock:
+            _scan_state.update(total=len(files), found=len(files),
+                               mem_total=len(files), phase="matching")
+
+        def on_progress(done, total, hashed, matched):
+            with _scan_lock:
+                _scan_state.update(mem_done=done, stat_done=done, hashed=hashed,
+                                   hits=matched)
+
+        try:
+            mem = db.memory_status_map(files, progress=on_progress)
+        except Exception:  # noqa: BLE001  记忆表异常不应挡住扫描
+            mem = {}
+        with _scan_lock:
+            _scan_state.update(phase="saving", hits=len(mem),
+                               mem_done=len(files), stat_done=len(files))
+
+        res = db.add_tasks(files, mem)
+        _invalidate_filter_cache()   # 新扫入的文件要立刻出现在「缺歌词/缺封面」等筛选里
+        result = {"path": path, "total": len(files), "added": res["added"],
+                  "manual_done": res["manual_done"], "memory": res["memory"],
+                  "by_status": res["by_status"]}
+        with _scan_lock:
+            _scan_state.update(result, running=False, phase="done",
+                               elapsed=time.time() - t0, finished_at=time.time())
+        return result
+    except Exception as exc:  # noqa: BLE001
+        with _scan_lock:
+            _scan_state.update(running=False, phase="error", error=str(exc),
+                               elapsed=time.time() - t0, finished_at=time.time())
+        raise
 
 
 @app.post("/api/scan")
@@ -201,22 +270,42 @@ def scan(body: ScanBody):
     已在「处理记录」里的文件（含被改名/搬家、按大小+哈希认出来的）
     直接按记录里的标签入列（已人工 / 错误 / 跳过），不会被打回待处理、
     也不会再次被刮削；只有人工把它指定成别的状态，它才会离开这个标签。
+
+    实现在后台线程里跑，接口**立刻返回**（`started=true`），
+    进度用 `GET /api/scan-status` 查（否则几千个文件要等十几秒，界面像没反应）。
+    想同步等结果（脚本/测试用）就传 `wait=true`。
     """
     cfg = db.get_config()
     path = body.path or cfg.get("music_dir", "")
     recursive = body.recursive if body.recursive is not None else cfg.get("recursive") == "1"
     if not os.path.isdir(path):
         raise HTTPException(400, f"目录不存在或不可读: {path}")
-    files = scheduler.collect_audio_files(path, recursive)
-    try:
-        mem = db.memory_status_map(files)
-    except Exception:  # noqa: BLE001  记忆表异常不应挡住扫描
-        mem = {}
-    res = db.add_tasks(files, mem)
-    _invalidate_filter_cache()   # 新扫入的文件要立刻出现在「缺歌词/缺封面」等筛选里
-    return {"path": path, "total": len(files), "added": res["added"],
-            "manual_done": res["manual_done"], "memory": res["memory"],
-            "by_status": res["by_status"]}
+
+    if body.wait:
+        return _scan_worker(path, recursive)
+
+    with _scan_lock:
+        if _scan_state["running"]:
+            return {"started": False, "running": True, "reason": "已有扫描在进行中"}
+        _scan_state.update(started=False, running=True, phase="collecting", path=path,
+                           total=0, stat_done=0, hashed=0, hits=0,
+                           started_at=time.time(), elapsed=0.0,
+                           added=0, manual_done=0, memory=0, by_status={},
+                           error="", finished_at=0.0)
+    threading.Thread(target=_scan_worker, args=(path, recursive), daemon=True).start()
+    return {"started": True, "running": True, "path": path}
+
+
+@app.get("/api/scan-status")
+def scan_status():
+    """扫描进度（供界面显示「已扫描 N 个文件」这类进度）。"""
+    with _scan_lock:
+        st = dict(_scan_state)
+    if st["running"]:
+        st["elapsed"] = round(time.time() - st["started_at"], 1)
+    else:
+        st["elapsed"] = round(st["elapsed"], 1)
+    return st
 
 
 @app.post("/api/tasks/reset")
@@ -608,8 +697,33 @@ def stop():
 
 @app.get("/api/status")
 def status():
-    return {"running": scheduler._scraper.running if scheduler._scraper else False,
-            "error": scheduler._scraper.error if scheduler._scraper else None}
+    """运行状态（界面打开时立刻取一次，之后每 5 秒刷新）。
+
+    除了「是否在跑」，这里还把**进度数字**一起给界面：
+    - 刮削：本次已处理 done / 本次总目标 total（pending + 已匹配未写入；有运行上限时取较小者）
+    - 扫描：scan.{running,total,stat_done,hashed,...}（见 /api/scan-status）
+    """
+    scraper = scheduler._scraper
+    running = bool(scraper and scraper.running)
+    done = int(getattr(scraper, "_done", 0) or 0)
+    max_tasks = int(getattr(scraper, "max_tasks", 0) or 0)
+    out = {"running": running,
+           "done": done,
+           "error": scraper.error if scraper else None}
+    if running:
+        pending = db.count_tasks("pending")
+        try:
+            unwritten = db.count_unwritten_auto_ok()
+        except Exception:  # noqa: BLE001
+            unwritten = 0
+        total = pending + unwritten
+        if max_tasks:
+            total = min(total, max_tasks)
+        out["total"] = total
+        out["remaining"] = max(0, total - done)
+    with _scan_lock:
+        out["scan"] = dict(_scan_state)
+    return out
 
 
 # ---------------- 人工辅助 ----------------

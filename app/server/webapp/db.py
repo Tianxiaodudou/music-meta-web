@@ -604,7 +604,8 @@ def remove_manual_done(path: str) -> bool:
         return cur.rowcount > 0
 
 
-def memory_status_map(paths) -> Dict[str, str]:
+def memory_status_map(paths, hash_budget: Optional[float] = None,
+                      progress=None) -> Dict[str, str]:
     """批量找出哪些文件在处理记录里，并给出 {路径: 该还原成的标签}。
 
     先按路径命中（绝大多数情况，零成本）；未命中的再用「大小 + 内容 sha256」
@@ -615,8 +616,12 @@ def memory_status_map(paths) -> Dict[str, str]:
     1. 只有**大于 0** 的大小才算「已知大小」。文件已被删除/搬走的旧记录 size 可能是 0，
        若把它当已知值，真实文件的大小永远对不上任何记录的 size，
        于是每个文件都要读整文件算 sha256（整库几十 GB，扫描表现为永远「扫不到」）。
-    2. 一条记录的哈希也认不出来时，不再对**剩下所有文件**逐个算哈希（见下方 hashing 开关）：
-       库越大越亏，且有上限兜底，避免一次扫描把整库读完。
+    2. 一条记录的哈希也认不出来时，不再对**剩下所有文件**逐个算哈希：
+       有时间预算兜底，避免一次扫描把整库读完。
+
+    :param hash_budget: 兜底哈希的秒数预算，None=用 FALLBACK_HASH_BUDGET
+    :param progress: 可选回调 (done, total, hashed, matched)，用于把「比对到第几个、命中几条」
+        告诉界面（两段进度里的第二段）
     """
     paths = list(paths)
     if not paths:
@@ -641,29 +646,32 @@ def memory_status_map(paths) -> Dict[str, str]:
     size_unknown = any(r["file_hash"] and not (r["file_size"] and int(r["file_size"]) > 0)
                        for r in rows)
     if not size_unknown:
-        # 快路径：大小这个筛子可用，只有大小能对上记录的文件才需要读内容
-        for p in paths:
-            if p in hits:
-                continue
+        # 快路径：大小这个筛子可用，只有大小能对上记录的文件才需要读内容。
+        # 这里基本不读内容，但也要按文件逐一回报进度（界面要显示「命中记忆 N/M」），
+        # 否则几千个文件会显得全程没动静。
+        todo = [p for p in paths if p not in hits]
+        for i, p in enumerate(todo, 1):
             try:
                 size = os.path.getsize(p)
             except OSError:
-                continue
-            if size not in sizes:
-                continue
-            h = file_sha256(p)
-            if h in by_hash:
-                hits[p] = by_hash[h]
+                size = None
+            if size is not None and size in sizes:
+                h = file_sha256(p)
+                if h in by_hash:
+                    hits[p] = by_hash[h]
+            if progress and (i % 100 == 0 or i == len(todo)):
+                progress(i, len(todo), i, len(hits))
         return hits
 
     # 兜底路径：记录里存在「不知道大小」的哈希（例如写入记录那一刻文件就已经没了）。
-    # 这段只在脏记录存在时才会走到：最多花 FALLBACK_HASH_BUDGET 秒做「改名/搬家」识别，
+    # 这段只在脏记录存在时才会走到：最多花 hash_budget 秒做「改名/搬家」识别，
     # 绝不把整库读完 —— 否则界面看起来就是「扫描卡住 / 永远 0 首」
     # （2026-09-12 真实故障：一条 size=0 的已删除文件曾让整库每个文件都算一遍 sha256）。
-    deadline = time.monotonic() + FALLBACK_HASH_BUDGET
-    for p in paths:
-        if p in hits:
-            continue
+    budget = FALLBACK_HASH_BUDGET if hash_budget is None else float(hash_budget)
+    deadline = time.monotonic() + budget
+    todo = [p for p in paths if p not in hits]
+    examined = 0
+    for i, p in enumerate(todo, 1):
         if time.monotonic() > deadline:
             break
         try:
@@ -671,9 +679,14 @@ def memory_status_map(paths) -> Dict[str, str]:
                 continue
         except OSError:
             continue
+        examined += 1
         h = file_sha256(p)
         if h in by_hash:
             hits[p] = by_hash[h]
+        if progress and (i % 50 == 0 or i == len(todo)):
+            progress(i, len(todo), examined, len(hits))
+    if progress:
+        progress(len(todo), len(todo), examined, len(hits))
     return hits
 
 

@@ -255,6 +255,7 @@
   <div class="row1">
     <h1>🎵 音乐数据刮削</h1>
     <span class="running" id="runState"></span>
+    <span class="running" id="scanState"></span>
     <button class="gear" id="gearBtn" onclick="showPage('config')" title="设置">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -1283,10 +1284,15 @@ async function scan(){
     const cfg = await api("/api/config");
     if(!cfg.music_dir){ msg("请先到设置里填写音乐目录"); showPage("config"); return; }
     const r = await jsonPost("/api/scan", {});
-    let m = `已扫描：共 ${r.total || 0} 个文件，新增 ${r.added || 0} 个`;
-    if(r.manual_done) m += `，其中 ${r.manual_done} 个已是「已人工」`;
-    msg(m); await loadStats(); await loadQueue();
-  }catch(e){ msg("扫描失败：" + (e.message||e)); }
+    if(r.started === false){
+      msg(r.reason || "扫描没能启动");
+      await refreshStatus();
+      return;
+    }
+    msg("开始扫描…（顶栏会显示扫到多少个文件）");
+    await refreshStatus();     // 立刻把「正在列目录…」显示出来
+    startScanPolling();        // 之后每 0.8 秒刷新数量进度
+  }catch(e){ msg("扫描失败：" + cnErr(e.message || e)); }
 }
 async function run(){
   try{
@@ -1646,14 +1652,84 @@ function busyUI(){
   if(el && ["INPUT","TEXTAREA"].includes(el.tagName)) return true;
   return false;
 }
+// 运行状态 + 扫描进度的统一渲染（页面打开、每 5 秒轮询、扫描期间更密地轮询都走这里）
+function renderRunState(s){
+  const el = $("runState");
+  if(!el) return;
+  if(s && s.running){
+    const done = Number(s.done || 0);
+    const total = Number(s.total || 0);
+    el.textContent = total > 0
+      ? `● 刮削运行中 ${done}/${total}（剩 ${Math.max(0, total - done)}）`
+      : `● 刮削运行中（已处理 ${done} 首）`;
+    el.style.color = "var(--ok)";
+  }else{
+    el.textContent = "（空闲）";
+    el.style.color = "#999";
+  }
+  const sc = s && s.scan;
+  const sel = $("scanState");
+  if(sel){
+    if(sc && sc.running){
+      // 两段进度：① 把歌扫出来 ② 命中处理记录
+      const parts = [];
+      if(sc.phase === "collecting"){
+        parts.push(`⟳ 扫描目录：已找到 ${sc.found || 0} 个音频` +
+                   (sc.scanned ? `（看过 ${sc.scanned} 个文件）` : ""));
+        parts.push(`② 命中记录：等待中`);
+      }else{
+        parts.push(`✓ 已扫描出 ${sc.total || 0} 个音频`);
+        const mt = Number(sc.mem_total || 0);
+        const md = Number(sc.mem_done || 0);
+        const ph = sc.phase === "saving" ? "写入队列" : "比对记录";
+        parts.push(`⟳ ${ph}：${md}/${mt}（已命中 ${sc.hits || 0}` +
+                   (sc.hashed ? `，读内容 ${sc.hashed}` : "") + `）`);
+      }
+      sel.textContent = parts.join("　");
+      sel.style.color = "var(--warn, #d08700)";
+    }else if(sc && sc.phase === "done" && sc.error === "" && sc.finished_at){
+      sel.textContent = `✓ 上次扫描：扫出 ${sc.total} 个音频，新增 ${sc.added}，命中记录 ${sc.memory}（${sc.elapsed}s）`;
+      sel.style.color = "#999";
+    }else if(sc && sc.error){
+      sel.textContent = `✗ 扫描失败：${sc.error}`;
+      sel.style.color = "var(--danger, #c00)";
+    }else{
+      sel.textContent = "";
+    }
+  }
+}
+async function refreshStatus(){
+  try{ renderRunState(await api("/api/status")); }catch(e){}
+}
 async function poll(){
   try{
     const s = await api("/api/status");
-    $("runState").textContent = s.running ? "● 刮削运行中" : "（空闲）";
-    $("runState").style.color = s.running ? "var(--ok)" : "#999";
+    renderRunState(s);
     await loadStats();
     if(!busyUI()) await loadQueue();
   }catch(e){}
+}
+// 扫描期间单独加密轮询，让「已扫描 N 个文件」实时跳（几秒一次看不出进度）
+let scanTimer = null;
+function startScanPolling(){
+  if(scanTimer) clearInterval(scanTimer);
+  scanTimer = setInterval(async () => {
+    let s = null;
+    try{ s = await api("/api/status"); }catch(e){}
+    if(!s) return;
+    renderRunState(s);
+    const sc = s.scan || {};
+    if(!sc.running){
+      clearInterval(scanTimer); scanTimer = null;
+      if(sc.phase === "done"){
+        msg(`已扫描：共 ${sc.total || 0} 个文件，新增 ${sc.added || 0} 个` +
+            (sc.memory ? `，其中 ${sc.memory} 个命中处理记录` : ""));
+        await loadStats(); await loadQueue();
+      }else if(sc.error){
+        msg("扫描失败：" + cnErr(sc.error));
+      }
+    }
+  }, 800);
 }
 for(const k of ["min_interval","concurrency","source_limit","request_timeout",
                 "request_retries","run_limit","pause_every","pause_seconds"]){
@@ -1666,6 +1742,13 @@ setInterval(poll, 5000);
     const wx = $("donateImgWx"), ali = $("donateImgAli");
     if(wx) wx.src = DONATE_WX;
     if(ali) ali.src = DONATE_ALI;
+    // 打开界面立刻刷新状态（不等 5 秒轮询），这样「刮削运行中 / 扫描中」一进来就能看到
+    const s0 = await api("/api/status").catch(()=>null);
+    if(s0){
+      renderRunState(s0);
+      // 若打开页面时正好在扫描，接着刷新数量进度
+      if(s0.scan && s0.scan.running) startScanPolling();
+    }
     const f = await api("/api/fields");
     fieldDefs = f.fields || [];
     activeFields = f.active || [];
