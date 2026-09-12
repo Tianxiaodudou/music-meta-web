@@ -13,7 +13,7 @@ import time
 
 import json
 
-from fastapi import FastAPI, File, HTTPException, Response, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -198,9 +198,9 @@ class ScanBody(BaseModel):
 def scan(body: ScanBody):
     """扫描目录：只解析文件名生成待处理清单，不修改任何音乐文件。
 
-    已在「人工处理永久记忆」里的文件（含被改名/搬家、按大小+哈希认出来的）
-    直接以「已人工」状态入列，不会被打回待处理、也不会再次被刮削；
-    只有人工把它指定成别的状态，它才会离开「已人工」。
+    已在「处理记录」里的文件（含被改名/搬家、按大小+哈希认出来的）
+    直接按记录里的标签入列（已人工 / 错误 / 跳过），不会被打回待处理、
+    也不会再次被刮削；只有人工把它指定成别的状态，它才会离开这个标签。
     """
     cfg = db.get_config()
     path = body.path or cfg.get("music_dir", "")
@@ -209,13 +209,14 @@ def scan(body: ScanBody):
         raise HTTPException(400, f"目录不存在或不可读: {path}")
     files = scheduler.collect_audio_files(path, recursive)
     try:
-        mem = db.memory_hits(files)
+        mem = db.memory_status_map(files)
     except Exception:  # noqa: BLE001  记忆表异常不应挡住扫描
-        mem = set()
+        mem = {}
     res = db.add_tasks(files, mem)
     _invalidate_filter_cache()   # 新扫入的文件要立刻出现在「缺歌词/缺封面」等筛选里
     return {"path": path, "total": len(files), "added": res["added"],
-            "manual_done": res["manual_done"], "memory": len(mem)}
+            "manual_done": res["manual_done"], "memory": res["memory"],
+            "by_status": res["by_status"]}
 
 
 @app.post("/api/tasks/reset")
@@ -432,8 +433,8 @@ def set_task_status(body: TaskStatusBody):
     """手动指定某个文件的状态（队列里点状态标签弹出的菜单调用）。
 
     这是「人工逐条」的操作，因此只有这里（以及手动刮削窗口写字段）会产生
-    「已人工」标签与永久记忆；离开已人工时顺带清掉该文件的历史选择记录 ——
-    状态只认当前生效的那一份，旧记录不再影响后续行为。
+    「已人工」标签；处理记录跟着状态走：已人工 / 错误 / 跳过 各记一条，
+    其它状态清掉该文件的记录 —— 状态只认当前生效的那一份。
     """
     path = (body.file or "").strip()
     status = (body.status or "").strip()
@@ -441,21 +442,10 @@ def set_task_status(body: TaskStatusBody):
         raise HTTPException(400, "缺少文件路径")
     if status not in MANUAL_STATUS:
         raise HTTPException(400, f"不支持的状态：{status}")
-    if status == "manual_done":
-        # 已人工：写入永久记忆（按内容哈希），后续刮削自动排除
+    if status != "manual_done":
+        # 旧的选择/跳过记录不再参与判断（记忆由 db.set_status 统一维护）
         try:
-            db.record_manual_done(path)
-        except Exception:
-            pass
-    else:
-        # 记忆跟随状态走：只要不是「已人工」，就一并清掉永久记忆
-        # （否则下次扫描/刮削又会被自动标回「已人工」）
-        try:
-            db.remove_manual_done(path)
-        except Exception:
-            pass
-        try:
-            db.drop_decision(path)   # 旧的选择/跳过记录不再参与判断
+            db.drop_decision(path)
         except Exception:
             pass
     if db.set_status(path, status) == 0:
@@ -604,7 +594,7 @@ def run():
     unwritten = db.count_unwritten_auto_ok() if cfg.get("write_enabled") == "1" else 0
     if not pending and not unwritten:
         return {"started": False,
-                "reason": "没有可刮的歌：既没有「待刮削前」的任务，也没有「已匹配未写入」的歌"}
+                "reason": "没有可刮的歌：既没有「待刮削」的任务，也没有「已匹配未写入」的歌"}
     ok = scheduler.start_scraper()
     return {"started": ok, "count": pending, "unwritten": unwritten,
             "reason": "" if ok else "启动失败：已有刮削在运行中"}
@@ -787,9 +777,100 @@ def embedded_cover(file: str):
                     headers={"Cache-Control": "no-store"})
 
 
+def _records_export_dir() -> str:
+    """处理记录导出文件的落盘目录。
+
+    优先用「元数据缓存目录」（用户可见、导出的文件同时能在「文件」里找到），
+    没配置时退回应用数据目录。
+    """
+    cfg = db.get_config()
+    base = (cfg.get("cache_dir") or "").strip() or (os.environ.get("TRIM_PKGVAR") or "").strip()
+    if not base:
+        base = os.path.dirname(db.DB_PATH)
+    d = os.path.join(base, "导出记录")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _mint_native_download(paths, zip_name: str, request) -> Optional[str]:
+    """借飞牛自己的「下载到本机」通道，返回可直接点的 URL（失败返回 None）。
+
+    手机飞牛 APP 只认它的原生下载：web 里点普通 blob 链接不会触发 APP 的文件传输。
+    飞牛「文件」应用的做法是先把会话 token 交给 /multiple-download 换一个一次性 token，
+    再让浏览器打开 /multiple-download?token=…（APP 会接管成文件传输）。
+    我们照做：token 取自网关转发过来的请求头（Authorization / Cookie），
+    拿不到就直接返回 None，由前端退回普通下载。
+    """
+    import urllib.request
+
+    tok = ""
+    auth = (request.headers.get("authorization") or "").strip()
+    if auth:
+        tok = auth.split()[-1] if auth.lower().startswith("trim ") else auth
+    if not tok:
+        # 有些部署把会话放在 cookie 里（名字带 token）
+        for part in (request.headers.get("cookie") or "").split(";"):
+            k, _, v = part.strip().partition("=")
+            if "token" in k.lower() and v:
+                tok = urllib.parse.unquote(v)
+                break
+    if not tok:
+        return None
+    payload = json.dumps({
+        "token": tok, "paths": list(paths), "downloadLimit": 2,
+        "noZipWhenSingleFile": True, "zipFileName": zip_name,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        "http://127.0.0.1:5666/multiple-download", data=payload,
+        headers={"Content-Type": "application/json",
+                 "Authorization": f"trim {tok}"})
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode("utf-8") or "{}")
+    except Exception as exc:  # noqa: BLE001  拿不到就走普通下载，不影响导出
+        print(f"[records] 原生下载通道不可用（{exc}），改用普通下载")
+        return None
+    one = (data or {}).get("token") or ""
+    return f"/multiple-download?token={one}" if one else None
+
+
+@app.post("/api/records/export-file")
+def records_export_file(request: Request):
+    """导出处理记录：先落一份到 NAS 目录，再尽量走飞牛原生下载通道发给本机。
+
+    返回 {"name","path","size","native_url"}；native_url 为空表示要走普通下载。
+    """
+    data = db.export_manual_done()
+    body = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+    name = f"music-meta-记录-{time.strftime('%Y%m%d-%H%M%S')}.json"
+    try:
+        d = _records_export_dir()
+        full = os.path.join(d, name)
+        with open(full, "wb") as f:
+            f.write(body)
+    except OSError as exc:
+        raise HTTPException(500, f"导出文件写入失败：{exc}")
+    native = None
+    try:
+        native = _mint_native_download([full], name, request)
+    except Exception:  # noqa: BLE001
+        native = None
+    return {"name": name, "path": full, "size": len(body),
+            "native_url": native, "counts": data.get("counts", {})}
+
+
+@app.post("/api/records/clear")
+def records_clear():
+    """清除处理记录：清掉永久记忆与人工选择，并把已人工/错误/跳过放回待刮削。"""
+    stat = db.clear_records()
+    _invalidate_filter_cache()
+    print(f"[records] 清除处理记录：{stat}")
+    return stat
+
+
 @app.get("/api/manual-done/export")
 def manual_done_export():
-    """导出人工处理记录（永久记忆 + 人工选择）为 JSON 文件。
+    """导出处理记录（永久记忆 + 人工选择）为 JSON 文件。
 
     直接在浏览器/手机/iOS/APP 内点一下就能保存到当前终端的下载目录。
     """
@@ -804,7 +885,10 @@ def manual_done_export():
 
 @app.post("/api/manual-done/import")
 async def manual_done_import(file: UploadFile = File(...)):
-    """导入人工处理记录文件（由导出功能生成）：按文件路径合并，不删除本地已有记录。"""
+    """导入处理记录文件（由导出功能生成）：按文件路径合并，不删除本地已有记录。
+
+    导入后会按记录检索当前所有任务，命中的改成记录里对应的标签。
+    """
     raw = await file.read()
     if not raw:
         raise HTTPException(400, "文件是空的")
@@ -818,12 +902,12 @@ async def manual_done_import(file: UploadFile = File(...)):
         stat = db.import_manual_done(data)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
-    # 记录导入后，队列里待处理且已在记忆中的任务同步纠正为「已人工」
+    # 记录导入后，按记录把队列里匹配上的任务改成对应标签
     try:
         stat["tasks_synced"] = db.sync_memory_tasks()
     except Exception:  # noqa: BLE001
-        stat["tasks_synced"] = 0
-    print(f"[manual] 导入人工记录：{stat}")
+        stat["tasks_synced"] = {"total": 0}
+    print(f"[records] 导入处理记录：{stat}")
     return stat
 
 
@@ -1053,9 +1137,8 @@ def field_write(body: FieldWriteBody):
     # 标签已变更：使该文件的过滤缓存/标签缓存失效（修复字段后从过滤器消失）
     _invalidate_filter_cache(path)
     # 能走到这里就说明已启用写入：这是「人工逐条」的写文件动作
-    # → 永久记忆 + 打「已人工」标签（批量操作与自动刮削都不会产生这个标签）
+    # → 打「已人工」标签 + 处理记录（批量操作与自动刮削都不会产生这个标签）
     try:
-        db.record_manual_done(path)
         db.set_status(path, "manual_done", error=db.MANUAL_NOTE)
     except Exception:
         pass

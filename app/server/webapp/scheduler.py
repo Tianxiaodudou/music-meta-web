@@ -589,7 +589,7 @@ class Scraper(threading.Thread):
         """把「已自动匹配但还没写入文件」的歌按缓存候选写入（原「补写」功能）。
 
         学习模式下匹配到的歌状态是 auto_ok 且没有写入记录；打开写入后点「开始刮削」
-        会先走这一步把它们写掉，然后再正常刮「待刮削前」的歌。
+        会先走这一步把它们写掉，然后再正常刮「待刮削」的歌。
         """
         sources = resolve_sources(cfg)
         written = failed = 0
@@ -652,11 +652,12 @@ class Scraper(threading.Thread):
             if self._limit_reached():
                 db.set_status(path, "pending")   # 超出本次上限：放回队列（保留已匹配信息）
                 return
-            # 已人工处理过的音乐（永久记忆：路径或大小+哈希）→ 不发请求，
-            # 并就地标记回「已人工」（人工指定成别的状态才会离开这个状态）
+            # 已处理过的音乐（处理记录：路径或大小+哈希）→ 不发请求，
+            # 并就地按记录里的标签还原（人工指定成别的状态才会离开这个标签）
             try:
-                if db.is_manual_done(path):
-                    db.set_status(path, "manual_done", error=db.MANUAL_NOTE)
+                hit = db.memory_status_map([path]).get(path)
+                if hit:
+                    db.set_status(path, hit, error=db.memory_note(hit))
                     continue
             except Exception:
                 pass

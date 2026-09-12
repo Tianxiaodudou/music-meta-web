@@ -9,7 +9,7 @@
     --accent:#1d9bf0; --ok:#1aab5e; --warn:#e0a800; --err:#d9534f; --bg:#f5f6f8;
     /* 6 种状态标签配色（与状态过滤器一致） */
     --st-auto-bg:#d4edda;    --st-auto-fg:#155724;   /* 自动写入 浅绿 */
-    --st-pending-bg:#e7e9ee; --st-pending-fg:#555;   /* 待刮削前 浅灰 */
+    --st-pending-bg:#e7e9ee; --st-pending-fg:#555;   /* 待刮削 浅灰 */
     --st-done-bg:#1aab5e;    --st-done-fg:#fff;      /* 已人工   绿   */
     --st-manual-bg:#ffe08a;  --st-manual-fg:#7a5b00; /* 待人工   黄   */
     --st-skip-bg:#fff8dc;    --st-skip-fg:#8a6d1d;   /* 跳过     浅黄 */
@@ -104,6 +104,13 @@
                        padding:3px 2px; }
   .status-menu .sname { font-size:12.5px; font-weight:700; padding:2px 9px; border-radius:11px; text-align:center; }
   .status-menu .sgo { width:62px; text-align:center; padding:3px 0; font-size:12px; border-radius:4px; }
+  /* 标签说明浮窗：左列标签固定宽度 → 所有标签竖向对齐，右列一句解释 */
+  .st-info { width:min(430px,92vw); padding:10px 12px; }
+  .st-info .srow { display:grid; grid-template-columns:76px 1fr; gap:10px;
+                   align-items:start; padding:4px 0; }
+  .st-info .sname { font-size:12.5px; font-weight:700; padding:3px 9px; border-radius:11px;
+                    text-align:center; }
+  .st-info .sdesc { font-size:12.5px; line-height:1.5; color:#44506b; }
   .rename-pop { width:min(430px,92vw); }
   .rename-pop .rrow { display:flex; gap:8px; align-items:center; }
   .rename-pop input { flex:1; min-width:0; }
@@ -268,7 +275,9 @@
   <!-- ======= 队列页（全部状态合并成一个队列） ======= -->
   <div class="page active" id="page-queue">
     <div class="card">
-      <div class="chipbar" id="chipbar"></div>
+      <div class="chipbar" id="chipbar"><span id="chips" style="display:contents"></span><button
+              class="secondary" id="stInfoBtn" style="padding:3px 10px;font-size:12.5px"
+              onclick="toggleStatusInfo(event)" title="每个标签是什么意思">ⓘ 标签说明</button></div>
       <div class="searchbar">
         <input type="text" id="q" placeholder="搜索文件名 / 歌名 / 歌手…"
                onkeydown="if(event.key==='Enter')queueSearch()">
@@ -323,16 +332,19 @@
         <span class="muted" id="dirsSummary"></span>
       </div>
       <div class="row">
-        <label><b>人工处理记录</b>（永久记忆 + 人工选择：换机 / 备份用）</label>
+        <label><b>处理记录</b>（已人工 / 错误 / 跳过 三种标签的永久记忆：换机 / 备份用）</label>
         <button class="secondary" onclick="exportManual()">⬇ 导出到本机</button>
         <button class="secondary" onclick="$('impFile').click()">⬆ 导入记录文件</button>
+        <button class="danger" onclick="clearRecords()">🗑 清除记录</button>
         <input type="file" id="impFile" accept=".json,application/json"
                style="display:none" onchange="importManual(this)">
         <span class="muted" id="manualSummary"></span>
       </div>
       <div class="row" style="margin-top:-4px">
         <label class="muted">导出得到 JSON 文件（浏览器/手机/iOS/APP 都会存到当前设备的下载目录）；
-          导入时按文件路径合并，<b>不会删除</b>本机已有记录。</label>
+          导入时按文件路径合并，<b>不会删除</b>本机已有记录，并会把队列里命中的任务改成记录里的标签。
+          <b>清除记录</b>只清记录、不动音乐文件：已人工/错误/跳过的文件会变回「待刮削」，
+          清之前先导出就能随时导回来。</label>
       </div>
       <div class="row">
         <label><b>元数据源</b>（勾选可用的源，手动刮削按这里取候选）</label>
@@ -566,6 +578,7 @@
 
 <!-- ======= 浮动层：状态菜单 / 重命名 / 候选值下拉 ======= -->
 <div class="pop status-menu" id="statusMenu"></div>
+<div class="pop st-info" id="stInfoPanel" onclick="event.stopPropagation()"></div>
 <div class="pop rename-pop" id="renamePop"></div>
 <div class="pop cand-menu" id="candMenu"></div>
 
@@ -577,14 +590,15 @@ const $ = id => document.getElementById(id);
 const PER_PAGE = 20;
 
 // 6 种状态（+全部）：队列过滤器与状态标签共用一份定义
+// desc = 「标签说明」信息窗口里的一句话解释（标签列竖向对齐）
 const STATUSES = [
-  {key:"all",            label:"全部"},
-  {key:"auto_ok",        label:"自动写入"},
-  {key:"pending",        label:"待刮削前"},
-  {key:"manual_done",    label:"已人工"},
-  {key:"manual_pending", label:"待人工"},
-  {key:"skipped",        label:"跳过"},
-  {key:"error",          label:"错误"},
+  {key:"all",            label:"全部",     desc:"不做筛选：队列里的文件全部列出来。"},
+  {key:"auto_ok",        label:"自动写入", desc:"自动匹配成功并已写入文件；正在写入的也算这一档。"},
+  {key:"pending",        label:"待刮削",   desc:"已扫描入列、还没刮削，下次「开始刮削」会处理它。"},
+  {key:"manual_done",    label:"已人工",   desc:"你人工逐条处理过的（记进了处理记录），刮削会自动跳过。"},
+  {key:"manual_pending", label:"待人工",   desc:"自动刮削没找到合格候选，需要你手动挑一个。"},
+  {key:"skipped",        label:"跳过",     desc:"被批量跳过或你指定为跳过，不会再被刮削。"},
+  {key:"error",          label:"错误",     desc:"写文件时出错，看备注里的原因；「重试错误」可把它放回待刮削。"},
 ];
 const ST_LABEL = Object.fromEntries(STATUSES.map(s => [s.key, s.label]));
 
@@ -676,7 +690,7 @@ function renderChips(stats){
   // 「自动写入」过滤同时包含正在处理的（processing），计数合并显示
   counts.auto_ok = (counts.auto_ok||0) + (stats.processing || 0);
   counts.all = STATUSES.reduce((a,s)=> a + (s.key==="all" ? 0 : counts[s.key]||0), 0);
-  $("chipbar").innerHTML = STATUSES.map(s =>
+  $("chips").innerHTML = STATUSES.map(s =>
     `<span class="chip ${s.key}${qState.status===s.key?" active":""}" onclick="setFilter('${s.key}')">` +
     `${s.label} <span class="n">${counts[s.key]||0}</span></span>`).join("");
 }
@@ -684,6 +698,20 @@ function setFilter(key){
   qState.status = key; qState.page = 0;
   loadStats().catch(()=>{});
   loadQueue().catch(e=>msg("加载失败：" + (e.message||e)));
+}
+// 「ⓘ 标签说明」：竖向列出每个标签 + 一句话解释
+function toggleStatusInfo(ev){
+  ev.stopPropagation();
+  const p = $("stInfoPanel");
+  const open = p.classList.contains("open");
+  closeAllPops();
+  if(open) return;
+  p.innerHTML = STATUSES.map(s =>
+    `<div class="srow">
+       <span class="sname ${s.key}" ${s.key==="all" ? 'style="background:#eef1f5;color:#44506b"' : ""}>${s.label}</span>
+       <span class="sdesc">${esc(s.desc||"")}</span>
+     </div>`).join("");
+  placePop(p, $("stInfoBtn"));
 }
 
 // ---------------- 队列列表 ----------------
@@ -772,7 +800,7 @@ function clearAdvFilter(){ advFilter.clear(); qState.page = 0;
 function renderBatchBar(){
   const acts = [];
   if(qState.status === "pending")
-    acts.push(`<button class="ok" onclick="scrapePending()">▶ 刮削待刮削前队列</button>`);
+    acts.push(`<button class="ok" onclick="scrapePending()">▶ 刮削「待刮削」队列</button>`);
   if(qState.status === "manual_pending")
     acts.push(`<button class="ok" onclick="batchBest()">批量选用最高分</button>`,
               `<button class="warn" onclick="batchSkip()">批量跳过</button>`,
@@ -780,7 +808,7 @@ function renderBatchBar(){
   if(qState.status === "auto_ok")
     acts.push(`<button class="secondary" onclick="exportAutoOk()">💾 导出已写入到缓存</button>`);
   if(qState.status === "skipped")
-    acts.push(`<button class="secondary" onclick="unskipAll()">↩ 全部恢复为待刮削前</button>`);
+    acts.push(`<button class="secondary" onclick="unskipAll()">↩ 全部恢复为待刮削</button>`);
   if(qState.status === "error")
     acts.push(`<button class="secondary" onclick="retryErrors()">🔄 全部重试</button>`);
   $("batchbar").innerHTML = acts.join("");
@@ -892,8 +920,8 @@ function confirmDelete(file, name){
     `请选择删除方式：<br>` +
     `① <b>只删除任务</b> — 只把这首歌从队列移除，音乐文件保留在磁盘上；<br>` +
     `② <b>删除任务 + 文件本体</b> — 任务和磁盘上的音乐文件都会删除，无法找回。<br><br>` +
-    `<span class="muted">两种方式都会保留「人工处理记录」：重新扫描时这首歌仍会标为「已人工」，
-     要让它重新刮削，请先把状态指定为「待处理」。</span>` +
+    `<span class="muted">两种方式都会保留「处理记录」：重新扫描时这首歌仍会按记录标回原来的标签，
+     要让它重新刮削，请先把状态指定为「待刮削」（或到设置里清除记录）。</span>` +
     (writeEnabled ? "" :
      `<br><br><b style="color:var(--warn)">⚠ 当前是学习模式：不会删除磁盘上的音乐文件</b>
       <span class="muted">（要删文件请先在设置里勾选「启用真实写入」）</span>`);
@@ -1312,11 +1340,11 @@ async function batchSkip(){
 }
 async function unskipAll(){
   await jsonPost("/api/tasks/unskip", {});
-  msg("已全部恢复为待刮削前"); await loadStats(); await loadQueue();
+  msg("已全部恢复为待刮削"); await loadStats(); await loadQueue();
 }
 async function retryErrors(){
   const r = await jsonPost("/api/tasks/retry-errors", {});
-  msg(`已恢复 ${r.retried} 首为待刮削前`); await loadStats(); await loadQueue();
+  msg(`已恢复 ${r.retried} 首为待刮削`); await loadStats(); await loadQueue();
 }
 async function exportAutoOk(){
   try{
@@ -1379,24 +1407,40 @@ async function saveRisk(){
   }catch(e){ msg("保存失败：" + (e.message||e)); }
 }
 
+// 导出处理记录：先让服务端在 NAS 上落一份文件，再尽力走飞牛原生下载通道
+// （手机 APP 只认它的原生下载：普通 blob 链接不会触发 APP 的文件传输）
 async function exportManual(){
+  msg("正在生成导出文件…");
+  let d = null;
   try{
-    msg("正在生成导出文件…");
-    const r = await fetch(BASE + "api/manual-done/export", {method:"GET"});
-    if(!r.ok){
-      let d = await r.text();
-      try{ d = JSON.parse(d).detail || d; }catch(e){}
-      throw new Error(d || ("HTTP " + r.status));
-    }
-    const blob = await r.blob();
-    const name = `music-meta-manual-${new Date().toISOString().slice(0,19)
+    d = await jsonPost("api/records/export-file", {});
+  }catch(e){
+    // 落盘失败也不至于没法导出：退回内存里生成 + 普通下载
+    console.warn("export-file failed", e);
+  }
+  const name = (d && d.name) || `music-meta-记录-${new Date().toISOString().slice(0,19)
                     .replace(/[-:T]/g,"")}.json`;
+  if(d && d.native_url){
+    // 与飞牛「文件」应用同一条通道：APP 会以「文件传输」接收
+    const a = document.createElement("a");
+    a.href = d.native_url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    msg(`已开始传输到本机：${name}`
+        + (d.path ? `（NAS 上也留了一份：${d.path}）` : ""));
+    return;
+  }
+  // 回退：普通下载（浏览器/桌面端可用；APP 里可能不触发文件传输）
+  try{
+    const r = await fetch(BASE + "api/manual-done/export", {method:"GET"});
+    if(!r.ok) throw new Error("HTTP " + r.status);
+    const blob = await r.blob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url; a.download = name;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 4000);
-    msg("已导出 " + name + "（存到当前设备的下载目录）");
+    msg(`已导出 ${name}` + (d && d.path
+        ? `（NAS 路径：${d.path}，手机 APP 若不下载可在「文件」里取）` : ""));
   }catch(e){ msg("导出失败：" + (e.message||e)); }
 }
 async function importManual(input){
@@ -1412,17 +1456,42 @@ async function importManual(input){
     try{ d = JSON.parse(t); }catch(e){}
     if(!r.ok) throw new Error(d.detail || t || ("HTTP " + r.status));
     const md = d.manual_done || {}, dec = d.decisions || {};
-    msg(`导入完成：人工记录 新增 ${md.added||0} / 更新 ${md.updated||0}`
+    const synced = d.tasks_synced || {};
+    msg(`导入完成：处理记录 新增 ${md.added||0} / 更新 ${md.updated||0}`
         + `，选择记录 新增 ${dec.added||0} / 更新 ${dec.updated||0}`
-        + (d.tasks_synced ? `；队列里 ${d.tasks_synced} 条任务已同步标为「已人工」` : ""));
+        + (synced.total ? `；队列里 ${synced.total} 条任务已改成记录里的标签`
+                        : "；队列里没有匹配上的任务"));
     await loadConfig(); await loadStats(); await loadQueue();
   }catch(e){ msg("导入失败：" + (e.message||e)); }
   finally{ input.value = ""; }
 }
 function updateManualSummary(){
-  const s = manualStats || {};
+  const s = manualStats || {}, by = s.by_status || {};
   $("manualSummary").textContent =
-    `当前：人工记录 ${s.manual_done||0} 条 · 选择记录 ${s.decisions||0} 条`;
+    `当前：已人工 ${by.manual_done||0} · 错误 ${by.error||0} · 跳过 ${by.skipped||0}`
+    + ` · 选择记录 ${s.decisions||0} 条`;
+}
+// 清除处理记录：二次确认（先问「是否已导出」，再确认一次），清完把这几档放回待刮削
+async function clearRecords(){
+  // 先刷新一次统计：确认框里的条数必须是此刻的真实值
+  try{ const c = await api("api/config"); manualStats = c.manual_stats || {}; }catch(e){}
+  const s = manualStats || {}, by = s.by_status || {};
+  const total = (by.manual_done||0) + (by.error||0) + (by.skipped||0);
+  if(!total && !(s.decisions||0)){ msg("当前没有可清除的处理记录"); return; }
+  if(!confirm("即将清除处理记录：\n"
+        + `已人工 ${by.manual_done||0} 条 · 错误 ${by.error||0} 条 · 跳过 ${by.skipped||0} 条\n`
+        + `（另有 ${s.decisions||0} 条选择记录）\n\n`
+        + "清除后这些文件会变回「待刮削」，音乐文件本身不会被改动。\n\n"
+        + "你导出过记录了吗？（现在还没导出的话，先点「取消」，"
+        + "再点「导出到本机」；导出的文件随时可以再导入回来）")) return;
+  if(!confirm("再次确认：立即清除全部处理记录？\n\n"
+        + "确定后会清空记录并把上述文件放回「待刮削」。")) return;
+  try{
+    const r = await jsonPost("api/records/clear", {});
+    msg(`已清除处理记录：记忆 ${r.memory||0} 条 · 选择记录 ${r.decisions||0} 条`
+        + `；${r.tasks||0} 首已放回「待刮削」`);
+    await loadConfig(); await loadStats(); await loadQueue();
+  }catch(e){ msg("清除失败：" + (e.message||e)); }
 }
 function updateDirsSummary(){
   const lib = ($("music_dir").value || "").trim();

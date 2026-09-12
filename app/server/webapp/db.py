@@ -42,14 +42,16 @@ CREATE TABLE IF NOT EXISTS decisions (
     songmid    TEXT,                  -- 空串表示跳过
     decided_at TEXT
 );
--- 已人工处理永久记忆（刮削时排除；重新扫描时自动标记为「已人工」）
+-- 处理记录（永久记忆）：记下「这个文件最终是哪种标签」，重新扫描时按它还原
 -- 以文件路径为主键（同一文件只记一行，存最新内容哈希）；哈希用于文件移动后仍可识别
 -- file_size 是识别改名/搬家文件的前置筛子：大小不同就不必读内容算哈希
+-- status 见 MEMORY_STATUSES（已人工 / 错误 / 跳过），旧库该列为空时按「已人工」处理
 CREATE TABLE IF NOT EXISTS manual_done (
     file_path TEXT PRIMARY KEY,
     file_hash TEXT,
     file_size INTEGER,
-    done_at   TEXT
+    done_at   TEXT,
+    status    TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_manual_done_hash ON manual_done(file_hash);
@@ -86,8 +88,21 @@ DEFAULTS: Dict[str, str] = {
     "active_fields": "title,artist,cover,lyrics",
 }
 
-#: 命中「人工处理永久记忆」时写入任务备注的固定文案（扫描 / 刮削 / 导入共用一处）
+#: 处理记录（永久记忆）能记下的三种标签——其余状态不落记忆（记忆跟随状态走）
+MEMORY_STATUSES = ("manual_done", "error", "skipped")
+
+#: 命中永久记忆、从记录还原标签时写入任务备注的固定文案（扫描 / 刮削 / 导入共用一处）
 MANUAL_NOTE = "已人工处理过（永久记忆），已自动标记为「已人工」"
+MEMORY_NOTES = {
+    "manual_done": MANUAL_NOTE,
+    "error": "上次刮削出错（永久记忆），已自动标记为「错误」",
+    "skipped": "之前被跳过（永久记忆），已自动标记为「跳过」",
+}
+
+
+def memory_note(status: Optional[str]) -> str:
+    """记忆里的状态 → 还原标签时写在任务备注里的说明。"""
+    return MEMORY_NOTES.get((status or "").strip(), MANUAL_NOTE)
 
 
 def connect() -> sqlite3.Connection:
@@ -119,6 +134,11 @@ def init_db() -> None:
         mcols = [r[1] for r in c.execute("PRAGMA table_info(manual_done)").fetchall()]
         if "file_size" not in mcols:
             c.execute("ALTER TABLE manual_done ADD COLUMN file_size INTEGER")
+        # 兼容旧库：补 status 列（旧记录都是「已人工」，回填成 manual_done）
+        if "status" not in mcols:
+            c.execute("ALTER TABLE manual_done ADD COLUMN status TEXT")
+            c.execute("UPDATE manual_done SET status='manual_done' "
+                      "WHERE status IS NULL OR TRIM(status)=''")
         rows = c.execute("SELECT file_path FROM manual_done "
                          "WHERE file_size IS NULL").fetchall()
         for r in rows:
@@ -189,42 +209,50 @@ def delete_task(path: str) -> int:
     return cur.rowcount
 
 
-def add_tasks(files: List[str], manual: Optional[set] = None) -> Dict[str, int]:
+def add_tasks(files: List[str], memory: Optional[Dict[str, str]] = None) -> Dict[str, int]:
     """把扫描到的文件加入任务表。
 
-    manual 是「命中人工处理永久记忆」的路径集合（由 memory_hits 计算）：
-    这些文件直接以 manual_done 状态入列，重新扫描不会把它们打回待处理；
-    已存在且处于 pending 的同类任务也一并纠正为 manual_done（例如先导入记录再扫描）。
+    memory 是「命中处理记录」的 {路径: 记录里的标签}（由 memory_status_map 计算）：
+    这些文件直接按记录里的标签入列，重新扫描不会把它们打回待处理；
+    已存在且处于 pending 的同类任务也一并纠正（例如先导入记录再扫描）。
 
-    返回 {"added": 新增任务数, "manual_done": 其中/被纠正为已人工的条数}。
+    返回 {"added": 新增任务数, "manual_done": 其中/被纠正为已人工的条数,
+          "memory": 命中记录的条数, "by_status": {标签: 条数}}。
     """
-    manual = manual or set()
-    added = done = 0
+    memory = memory or {}
+    if not isinstance(memory, dict):        # 兼容旧调用：传集合时一律按「已人工」
+        memory = {p: "manual_done" for p in memory}
+    added = done = mem = 0
+    by_status: Dict[str, int] = {}
     now = time.strftime("%Y-%m-%d %H:%M:%S")
     with connect() as c:
         for path in files:
-            is_mem = path in manual
+            st = memory.get(path)
+            note = memory_note(st) if st else ""
             row = c.execute("SELECT status FROM tasks WHERE path=?", (path,)).fetchone()
             if row:
                 # 只纠正 pending（唯一会重新进入刮削的状态）；
                 # 其它状态是人工指定或刮削结果，保持不动
-                if is_mem and row["status"] == "pending":
+                if st and row["status"] == "pending":
                     c.execute(
-                        "UPDATE tasks SET status='manual_done', error=?, "
-                        "updated_at=? WHERE path=?",
-                        (MANUAL_NOTE, now, path))
+                        "UPDATE tasks SET status=?, error=?, updated_at=? WHERE path=?",
+                        (st, note, now, path))
                     done += 1
+                    by_status[st] = by_status.get(st, 0) + 1
                 continue
             c.execute(
                 "INSERT OR IGNORE INTO tasks(path, name, status, error, updated_at) "
                 "VALUES(?, ?, ?, ?, ?)",
-                (path, os.path.basename(path),
-                 "manual_done" if is_mem else "pending",
-                 MANUAL_NOTE if is_mem else "", now))
+                (path, os.path.basename(path), st or "pending",
+                 note, now))
             added += 1
-            if is_mem:
+            if st:
                 done += 1
-    return {"added": added, "manual_done": done}
+                by_status[st] = by_status.get(st, 0) + 1
+    mem = sum(by_status.values())
+    return {"added": added, "manual_done": by_status.get("manual_done", 0),
+            "memory": mem, "by_status": by_status}
+
 
 
 def claim_next(scope: Optional[set] = None) -> Optional[dict]:
@@ -278,6 +306,10 @@ def set_status(path: str, status: str, error: str = "",
     """只改任务状态（保留匹配结果/得分/已匹配的歌名歌手等字段），返回受影响行数。
 
     written 为 None 时不动该列；传入时一并更新（用于记录「本次写入了哪些字段」）。
+
+    同时让处理记录跟随状态：已人工 / 错误 / 跳过 三种标签各记一条记忆，
+    其它状态（待刮削、自动写入、待人工…）一律清掉该文件的记忆 ——
+    否则下次扫描/导入又会拿旧标签把它盖回去。
     """
     now = time.strftime("%Y-%m-%d %H:%M:%S")
     with connect() as c:
@@ -289,7 +321,22 @@ def set_status(path: str, status: str, error: str = "",
             cur = c.execute(
                 "UPDATE tasks SET status=?, error=?, written=?, updated_at=? "
                 "WHERE path=?", (status, error, written, now, path))
-        return cur.rowcount
+        rowcount = cur.rowcount
+    if rowcount:
+        sync_memory_for_status(path, status)
+    return rowcount
+
+
+def sync_memory_for_status(path: str, status: str) -> None:
+    """让处理记录跟随任务状态（已人工/错误/跳过 记记忆，其它状态清记忆）。"""
+    try:
+        if status in MEMORY_STATUSES:
+            record_memory(path, status)
+        else:
+            remove_manual_done(path)
+    except Exception:  # noqa: BLE001  记忆表异常不该挡住状态更新
+        pass
+
 
 
 def task_stats() -> Dict[str, int]:
@@ -379,31 +426,45 @@ def count_search(q: str, status: Optional[str] = None) -> int:
 # ---------------- 已人工处理永久记忆（路径 / 大小 + 哈希） ----------------
 
 def manual_done_stats() -> dict:
-    """人工处理记录条数（含人工选择记录）。"""
+    """处理记录条数（按标签分档 + 人工选择记录）。"""
     with connect() as c:
-        md = c.execute("SELECT COUNT(*) AS n FROM manual_done").fetchone()["n"]
+        rows = c.execute("SELECT status, COUNT(*) AS n FROM manual_done "
+                         "GROUP BY status").fetchall()
         dec = c.execute("SELECT COUNT(*) AS n FROM decisions").fetchone()["n"]
-    return {"manual_done": md, "decisions": dec}
+    by_status = {"manual_done": 0, "error": 0, "skipped": 0}
+    for r in rows:
+        st = (r["status"] or "").strip()
+        by_status[st if st in MEMORY_STATUSES else "manual_done"] += r["n"]
+    return {"manual_done": sum(by_status.values()), "decisions": dec,
+            "by_status": by_status}
 
 
 def export_manual_done() -> dict:
-    """导出人工处理记录（永久记忆 + 人工选择记录），供任意终端下载保存。"""
+    """导出处理记录（永久记忆 + 人工选择记录），供任意终端下载保存。"""
     with connect() as c:
         md = [dict(r) for r in c.execute(
-            "SELECT file_path, file_hash, file_size, done_at FROM manual_done "
+            "SELECT file_path, file_hash, file_size, done_at, status FROM manual_done "
             "ORDER BY done_at")]
         dec = [dict(r) for r in c.execute(
             "SELECT file_path, songmid, decided_at FROM decisions "
             "ORDER BY decided_at")]
-    return {"app": "music-meta-web", "schema": 1,
+    counts = {"manual_done": 0, "error": 0, "skipped": 0}
+    for r in md:
+        st = (r.get("status") or "").strip()
+        if st not in MEMORY_STATUSES:
+            st = "manual_done"
+        r["status"] = st
+        counts[st] += 1
+    return {"app": "music-meta-web", "schema": 2,
             "exported_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "manual_done": md, "decisions": dec}
+            "counts": counts, "manual_done": md, "decisions": dec}
 
 
 def import_manual_done(data: dict) -> dict:
-    """导入人工处理记录：按 file_path 合并，不删除本地已有记录。
+    """导入处理记录：按 file_path 合并，不删除本地已有记录。
 
     data 可以是导出文件本身，也可以只是 manual_done 数组。
+    每行可带 status（已人工 / 错误 / 跳过），旧导出文件没有该字段时按「已人工」处理。
     返回 {"manual_done": {"added","updated","skipped"}, "decisions": {...}}。
     """
     if isinstance(data, list):
@@ -439,12 +500,15 @@ def import_manual_done(data: dict) -> dict:
                 except OSError:
                     size = 0
             c.execute(
-                "INSERT INTO manual_done(file_path, file_hash, file_size, done_at) "
-                "VALUES(?,?,?,?) "
+                "INSERT INTO manual_done(file_path, file_hash, file_size, done_at, "
+                "status) VALUES(?,?,?,?,?) "
                 "ON CONFLICT(file_path) DO UPDATE SET file_hash=excluded.file_hash, "
-                "file_size=excluded.file_size, done_at=excluded.done_at",
+                "file_size=excluded.file_size, done_at=excluded.done_at, "
+                "status=excluded.status",
                 (path, str(r.get("file_hash") or "").strip(), size,
-                 str(r.get("done_at") or "").strip() or now))
+                 str(r.get("done_at") or "").strip() or now,
+                 (lambda s: s if s in MEMORY_STATUSES else "manual_done")(
+                     str(r.get("status") or "").strip())))
             updated += 1 if exists else 0
             added += 0 if exists else 1
         stat["manual_done"] = {"added": added, "updated": updated,
@@ -490,21 +554,42 @@ def file_sha256(path: str) -> str:
     return h.hexdigest()
 
 
-def record_manual_done(path: str) -> str:
-    """把人工处理过的文件永久记忆（写入模式下调用）。返回内容哈希。"""
-    fh = file_sha256(path)
-    if not fh:
-        return ""
+def record_memory(path: str, status: str = "manual_done",
+                  with_hash: Optional[bool] = None) -> str:
+    """把文件记进处理记录（永久记忆），status 决定重新扫描时还原成哪个标签。
+
+    with_hash 默认只有「已人工」才算内容哈希：它是人工逐条操作产生的，一次一个文件，
+    开销可以接受；「错误 / 跳过」可能是批量产生的（一键跳过几百首），只存大小不读内容，
+    避免一次点击把整个音乐库读一遍。未重算哈希时会沿用该文件已有的哈希。
+    返回本次记录的内容哈希（没有则为空串）。
+    """
+    status = status if status in MEMORY_STATUSES else "manual_done"
+    if with_hash is None:
+        with_hash = status == "manual_done"
+    fh = file_sha256(path) if with_hash else ""
     try:
         size = os.path.getsize(path)
     except OSError:
         size = 0
     now = time.strftime("%Y-%m-%d %H:%M:%S")
     with connect() as c:
+        if not fh:   # 不重算哈希时，别把已有的哈希弄丢（改名/搬家识别还靠它）
+            row = c.execute("SELECT file_hash FROM manual_done WHERE file_path=?",
+                            (path,)).fetchone()
+            fh = (row["file_hash"] or "") if row else ""
         c.execute(
-            "INSERT OR REPLACE INTO manual_done(file_path, file_hash, file_size, "
-            "done_at) VALUES(?,?,?,?)", (path, fh, size, now))
+            "INSERT INTO manual_done(file_path, file_hash, file_size, done_at, status) "
+            "VALUES(?,?,?,?,?) ON CONFLICT(file_path) DO UPDATE SET "
+            "file_hash=excluded.file_hash, file_size=excluded.file_size, "
+            "done_at=excluded.done_at, status=excluded.status",
+            (path, fh, size, now, status))
     return fh
+
+
+def record_manual_done(path: str) -> str:
+    """把人工处理过的文件永久记忆（记为「已人工」）。返回内容哈希。"""
+    return record_memory(path, "manual_done", with_hash=True)
+
 
 
 def remove_manual_done(path: str) -> bool:
@@ -514,8 +599,8 @@ def remove_manual_done(path: str) -> bool:
         return cur.rowcount > 0
 
 
-def memory_hits(paths) -> set:
-    """批量找出哪些文件属于「人工处理永久记忆」。
+def memory_status_map(paths) -> Dict[str, str]:
+    """批量找出哪些文件在处理记录里，并给出 {路径: 该还原成的标签}。
 
     先按路径命中（绝大多数情况，零成本）；未命中的再用「大小 + 内容 sha256」
     兜底识别被改名/搬家过的文件——先用 file_size 做筛子，大小对不上就不读内容，
@@ -524,16 +609,21 @@ def memory_hits(paths) -> set:
     """
     paths = list(paths)
     if not paths:
-        return set()
+        return {}
     with connect() as c:
-        rows = c.execute("SELECT file_path, file_hash, file_size "
+        rows = c.execute("SELECT file_path, file_hash, file_size, status "
                          "FROM manual_done").fetchall()
     if not rows:
-        return set()
-    known = {r["file_path"] for r in rows}
-    hits = {p for p in paths if p in known}
-    hashes = {r["file_hash"] for r in rows if r["file_hash"]}
-    if not hashes:
+        return {}
+
+    def _st(row) -> str:
+        s = (row["status"] or "").strip()
+        return s if s in MEMORY_STATUSES else "manual_done"
+
+    by_path = {r["file_path"]: _st(r) for r in rows}
+    hits = {p: by_path[p] for p in paths if p in by_path}
+    by_hash = {r["file_hash"]: _st(r) for r in rows if r["file_hash"]}
+    if not by_hash:
         return hits
     sizes = {int(r["file_size"]) for r in rows if r["file_size"]}
     # 有哈希但不知道大小的记录：无法用大小筛选，只能对剩余文件逐个算哈希
@@ -547,28 +637,73 @@ def memory_hits(paths) -> set:
             continue
         if not size_unknown and size not in sizes:
             continue
-        if file_sha256(p) in hashes:
-            hits.add(p)
+        h = file_sha256(p)
+        if h in by_hash:
+            hits[p] = by_hash[h]
     return hits
 
 
+def memory_hits(paths) -> set:
+    """批量找出属于处理记录的文件（只关心「是不是」，不关心标签）。"""
+    return set(memory_status_map(paths))
+
+
 def is_manual_done(path: str) -> bool:
-    """按路径或（大小 + 内容哈希）判断是否已人工处理过。"""
-    return bool(memory_hits([path]))
+    """按路径或（大小 + 内容哈希）判断是否记着「已人工」。"""
+    return memory_status_map([path]).get(path) == "manual_done"
 
 
-def sync_memory_tasks() -> int:
-    """把永久记忆里的 pending 任务纠正为 manual_done（导入人工记录后调用）。
+def sync_memory_tasks() -> Dict[str, int]:
+    """按处理记录纠正当前所有任务的标签（导入记录后调用）。
 
-    返回被纠正的任务数；不动其它状态（其它状态是人工指定或刮削结果）。
+    除「正在写入」（processing，调度器正在处理它）外都纠正：导入是用户明确的
+    「按备份还原」动作，队列里原有的标签不该盖过备份。返回 {"标签": 条数, "total": N}。
+    """
+    with connect() as c:
+        rows = c.execute(
+            "SELECT path FROM tasks WHERE status<>'processing'").fetchall()
+    paths = [r["path"] for r in rows]
+    if not paths:
+        return {"total": 0}
+    hit = memory_status_map(paths)
+    if not hit:
+        return {"total": 0}
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    out: Dict[str, int] = {}
+    with connect() as c:
+        for path, st in hit.items():
+            cur = c.execute(
+                "UPDATE tasks SET status=?, error=?, updated_at=? "
+                "WHERE path=? AND status<>'processing'",
+                (st, memory_note(st), now, path))
+            if cur.rowcount:
+                out[st] = out.get(st, 0) + cur.rowcount
+    out["total"] = sum(v for k, v in out.items() if k != "total")
+    return out
+
+
+def clear_records() -> Dict[str, int]:
+    """清除处理记录（永久记忆 + 人工选择），并把「已人工 / 错误 / 跳过」放回待刮削。
+
+    只清记录、不动音乐文件；清之前导出的 JSON 可以再导入回来。
+    被打回待刮削的是「标签是这三档的任务」+「记录里记着的文件」两类（两者通常重合，
+    升级前的老库可能只有标签没有记录，所以两边都算）。
+    返回 {"memory": 清掉的记忆条数, "decisions": 清掉的选择记录条数,
+          "tasks": 被打回待刮削的任务数}。
     """
     now = time.strftime("%Y-%m-%d %H:%M:%S")
     with connect() as c:
+        # 先按「标签 or 记录」把任务放回待刮削（要在删记录之前查记录表）
+        # 备注里的旧说明也一并清掉（避免显示过期的原因）
         cur = c.execute(
-            "UPDATE tasks SET status='manual_done', error=?, updated_at=? "
-            "WHERE status='pending' AND path IN (SELECT file_path FROM manual_done)",
-            (MANUAL_NOTE, now))
-        return cur.rowcount
+            "UPDATE tasks SET status='pending', error=NULL, updated_at=? "
+            "WHERE status IN ('manual_done','error','skipped') "
+            "   OR path IN (SELECT file_path FROM manual_done)", (now,))
+        back = cur.rowcount
+        mem = c.execute("DELETE FROM manual_done").rowcount
+        dec = c.execute("DELETE FROM decisions").rowcount
+    return {"memory": max(mem, 0), "decisions": max(dec, 0), "tasks": max(back, 0)}
+
 
 
 # ---------------- 候选 / 决策 ----------------
@@ -605,19 +740,20 @@ def get_candidates(file_path: str) -> List[dict]:
 def decide(file_path: str, songmid: str, skip: bool = False) -> None:
     """留档一次「选定/跳过」，并把任务改成当前生效的状态。
 
-    注意：「已人工」标签与永久记忆只由人工逐条操作产生（队列里指定状态、
-    手动刮削窗口写字段），批量处理与自动刮削**不产生**已人工 ——
-    写入成功记为 auto_ok（自动写入），跳过记为 skipped。
+    注意：「已人工」标签只由人工逐条操作产生（队列里指定状态、手动刮削窗口写字段），
+    批量处理与自动刮削**不产生**已人工 —— 写入成功记为 auto_ok（自动写入）。
+    批量跳过记为 skipped，并按「记忆跟随状态」记进处理记录（下次扫描还是跳过）。
     """
     now = time.strftime("%Y-%m-%d %H:%M:%S")
+    status = "skipped" if skip else "auto_ok"
     with connect() as c:
         c.execute(
             "INSERT OR REPLACE INTO decisions(file_path, songmid, decided_at) "
             "VALUES(?,?,?)",
             (file_path, "" if skip else songmid, now))
-        status = "skipped" if skip else "auto_ok"
         c.execute("UPDATE tasks SET status=?, updated_at=? WHERE path=?",
                   (status, now, file_path))
+    sync_memory_for_status(file_path, status)
 
 
 def drop_decision(file_path: str) -> None:
@@ -639,7 +775,8 @@ def get_decision(file_path: str) -> Optional[dict]:
 def unskip_all() -> int:
     """把 skipped 的任务恢复为 manual_pending（撤销误批量跳过）。
 
-    同时清掉这些文件的选择记录与永久记忆：记忆只跟随「已人工」状态存在。
+    同时清掉这些文件的选择记录与处理记录：状态已经不是「跳过」了，
+    记忆得跟着走，否则下次扫描又会被标回跳过。
     """
     with connect() as c:
         rows = c.execute("SELECT path FROM tasks WHERE status='skipped'").fetchall()
@@ -653,7 +790,7 @@ def unskip_all() -> int:
 
 
 def retry_errors() -> int:
-    """把 error 状态的任务恢复为 pending 以便重试（一并清掉永久记忆）。"""
+    """把 error 状态的任务恢复为 pending 以便重试（一并清掉处理记录）。"""
     with connect() as c:
         c.execute("DELETE FROM manual_done WHERE file_path IN "
                   "(SELECT path FROM tasks WHERE status='error')")
