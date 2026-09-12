@@ -41,6 +41,26 @@ FIELDS: Tuple[FieldDef, ...] = (
     FieldDef("lyrics", "歌词", "", "lyrics", special="lyrics"),
 )
 
+#: **本应用只服务飞牛官方音乐**：它读的标签我们才写，它不读的一律不写
+#: （用户 2026-09-12 拍板）。所以字段分成两类：
+#:
+#: - 可写：飞牛音乐真的会读这个标签（写入器按这些键写，见 musicmeta/writer.py）
+#: - 只读：飞牛音乐从来不读这个键（服务端二进制里 PUBLISHER / LABEL / LANGUAGE
+#:   一次都没出现），刮削拿到也**不会写进文件**；界面上显示为不可勾选，避免
+#:   「勾了却没效果」的误解。
+WRITABLE_FIELDS: Tuple[str, ...] = (
+    "title", "artist", "album", "album_artist", "year", "genre",
+    "track", "track_total", "disc", "cover", "lyrics",
+)
+#: 飞牛音乐不读的标签：保留字段是为了界面仍能显示/筛选这些信息，但永不写入
+READONLY_FIELDS: Tuple[str, ...] = ("publisher", "language")
+
+
+def is_writable(key: str) -> bool:
+    """该字段写进文件后，飞牛音乐会读到吗？（决定它能不能被勾选）"""
+    return key in WRITABLE_FIELDS
+
+
 FIELD_MAP: Dict[str, FieldDef] = {f.key: f for f in FIELDS}
 
 #: 默认生效字段：歌名、歌手、封面图、歌词
@@ -48,11 +68,16 @@ DEFAULT_ACTIVE: Tuple[str, ...] = ("title", "artist", "cover", "lyrics")
 
 
 def parse_active(value) -> List[str]:
-    """把配置值（逗号分隔字符串或列表）解析为生效字段列表（按 FIELDS 顺序）。"""
+    """把配置值（逗号分隔字符串或列表）解析为生效字段列表（按 FIELDS 顺序）。
+
+    只保留**可写字段**：飞牛音乐不读的标签（唱片公司 / 语言）即使被旧配置勾着，
+    也不会出现在生效字段里 —— 它们本来就写不进文件。
+    """
     if isinstance(value, (list, tuple, set)):
         raw = {str(x).strip() for x in value}
     else:
         raw = {x.strip() for x in str(value or "").split(",")}
+    raw &= set(WRITABLE_FIELDS)
     picked = [f.key for f in FIELDS if f.key in raw]
     return picked or list(DEFAULT_ACTIVE)
 

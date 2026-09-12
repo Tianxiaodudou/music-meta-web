@@ -91,6 +91,7 @@ def make_meta():
     m.track = "3"
     m.track_total = "12"
     m.disc = "1"
+    # 下面三样是「飞牛音乐不读」的字段：数据源即使给到，也不该被写进文件
     m.publisher = "测试唱片公司"
     m.language = "国语"
     m.comment = "测试备注"
@@ -124,6 +125,14 @@ def main():
     low = lower_set(keys)
     missing = [k for k in SERVICE_VORBIS if k not in low]
     check("服务端要读的键全部写出", not missing, ("缺 " + str(missing)) if missing else "")
+    # 用户定的原则：飞牛音乐不读的标签一律不写（服务端二进制里
+    # PUBLISHER / LABEL / LANGUAGE / COMPOSER 出现 0 次）
+    forbidden = {"publisher", "language", "label", "organization", "comment",
+                 "composer", "lyricist", "disctotal", "unsynced lyrics"}
+    present_forbidden = sorted(low & forbidden)
+    check("没有写「飞牛音乐不读」的键", not present_forbidden,
+          ("写了这些：" + str(present_forbidden)) if present_forbidden else "")
+
     raw = open(flac, "rb").read()
     check("歌词落盘键名是 LYRICS（大写，原始字节复核）",
           b"LYRICS=" in raw, [k for k in keys if "lyric" in k.lower()])
@@ -179,6 +188,10 @@ def main():
     print("     实际写入:", frames)
     missing = [f for f in SERVICE_ID3 if f not in frames]
     check("服务端读的帧全部写出", not missing, ("缺 " + str(missing)) if missing else "")
+    forbidden_frames = {"TPUB", "TLAN", "TCOM", "TEXT"}
+    present_bad = sorted(set(frames) & forbidden_frames)
+    check("MP3 没有写官方不读的帧（TPUB/TLAN 等）", not present_bad,
+          ("写了这些：" + str(present_bad)) if present_bad else "")
     check("TRCK 是 3/12（服务端按 x/n 拆）", str(raw.getall("TRCK")[0]) == "3/12",
           str(raw.getall("TRCK")[0]))
     t = read_tags(mp3)

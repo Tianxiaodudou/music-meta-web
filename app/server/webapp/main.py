@@ -18,7 +18,8 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from . import db, scheduler
-from musicmeta.fields import FIELD_MAP, FIELDS, active_fields, parse_active
+from musicmeta.fields import (FIELD_MAP, FIELDS, active_fields, is_writable,
+                              parse_active)
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
@@ -156,9 +157,14 @@ def get_sources():
 
 @app.get("/api/fields")
 def get_fields():
-    """可刮削字段清单（供设置页与手动刮削窗口使用）。"""
+    """可刮削字段清单（供设置页与手动刮削窗口使用）。
+
+    `writable` 表示「写进文件后飞牛音乐会读到吗」——界面对不可写的字段
+    （唱片公司 / 语言）显示为不可勾选，避免「勾了却没效果」。
+    """
     return {
-        "fields": [{"key": f.key, "label": f.label, "special": f.special}
+        "fields": [{"key": f.key, "label": f.label, "special": f.special,
+                    "writable": is_writable(f.key)}
                    for f in FIELDS],
         "active": active_fields(db.get_config()),
     }

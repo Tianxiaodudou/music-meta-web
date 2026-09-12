@@ -1,29 +1,33 @@
 # -*- coding: utf-8 -*-
 """用 mutagen 把 SongMeta 写入 flac / mp3 / ogg / ape 文件。
 
-写入的键名以「飞牛音乐真正会读的键」为准（本机 trim.music 服务端二进制
-trim-music 用 github.com/dhowden/tag 读标签，源码级结论见下）：
+**本应用的定位就是配合飞牛官方音乐：它读什么键，我们就写什么键；它不读的，一律不写。**
+（用户 2026-09-12 拍板。）允许写入的字段集中在 `READ_BY_FEINIU` 里，由 `_guard()` 强制执行。
+
+本机落地情况（`trim.music` 服务端 `trim-music`，字节级检索 + 真机对照实验）：
 
 - FLAC / OGG (VorbisComment，读入时键统一转小写)
-    title  artist  album  albumartist  composer  genre
+    title  artist  album  albumartist  genre
     **YEAR（纯数字年份，服务端只认这个）** + date（完整日期，别的工具用）
-    tracknumber + tracktotal     discnumber + disctotal
-    lyrics                       metadata_block_picture        comment（回退 description）
+    tracknumber + tracktotal     discnumber
+    lyrics                       metadata_block_picture
   注意：服务端读 FLAC/OGG 年份**不认 `date`**，只认 `YEAR` 且必须纯数字
   （2026-09-12 真机对照：只写 date 的文件服务端 year=null，写 year=2024 才有值）。
-- MP3 (ID3v2): TIT2 TPE1 TALB TPE2 TCOM TCON TYER(2.3)/TDRC(2.4)
-    TRCK("3/12")  TPOS("1/2")  USLT  APIC  COMM
-- APE (APEv2): Title Artist Album "Album Artist" Year Genre Track(3/11)
-    Lyrics "Cover Art (Front)"（APE 是 dl 用格式，非飞牛音乐读取格式，按通行写法保留）
-- 歌词另有 UNSYNCEDLYRICS 兜底（服务端只认 LYRICS，其它播放器认 UNSYNCEDLYRICS）
+- MP3 (ID3v2): TIT2 TPE1 TALB TPE2 TCON TDRC TRCK("3/12") TPOS USLT APIC
+- APE (APEv2): Title Artist Album "Album Artist" Date Genre Track
+    —— 飞牛音乐不索引 .ape，这里只是不让批量处理报错，键名按最通行写法写。
 
-写入器实际覆盖的字段：title / artist / album / album_artist / date / genre /
-track / track_total / disc / publisher / language / comment / 歌词 / 封面。
-服务端读得到的字段里，只有 composer 不在本应用的字段开关里（数据源也没取），
-publisher、language 被写出来是给其它播放器用的，服务端不读（不影响它）。
+**不写的字段（飞牛音乐从来不看这些键，写了也是白写）**：
+    publisher / TPUB（唱片公司）、language / TLAN（语言）、comment / COMM（备注）
+    以及 composer / lyricist / grouping（服务端查表里没有这些键）
+服务端二进制里 `PUBLISHER` / `LABEL` / `LANGUAGE` / `COMPOSER` / `LYRICIST` 出现 0 次，
+而 `TITLE` / `ARTIST` / `ALBUM` / `ALBUMARTIST` / `YEAR` / `GENRE` / `TRACKNUMBER` /
+`TRACKTOTAL` / `DISCNUMBER` / `LYRIC`+`LYRICS` 都能查到，所以按后者写。
+
+歌词另有 UNSYNCEDLYRICS 兜底（服务端只认 LYRICS，其它播放器认 UNSYNCEDLYRICS）。
 
 只写入非空字段；已有标签会被更新，不会删除其它字段。
-键名回归见 app/server/tests/test_tag_keys.py（21 项断言）。
+键名回归见 app/server/tests/test_tag_keys.py。
 """
 from __future__ import annotations
 
@@ -54,6 +58,35 @@ def _year_only(date: str) -> str:
     return ""
 
 
+#: 本应用存在的意义就是配合飞牛官方音乐：**它读什么键，我们就写什么键**。
+#: 下面这份「键 → 中文名」是唯一允许写入的清单，其它键一律不写（用户 2026-09-12 拍板）。
+#:
+#: 判定依据（`/usr/local/apps/@appcenter/trim.music/trim-music` 字节级检索 + 真机对照实验）：
+#:   有（会被读）：TITLE ARTIST ALBUM ALBUMARTIST YEAR GENRE TRACKNUMBER TRACKTOTAL
+#:                 DISCNUMBER LYRIC/LYRICS COMMENT DESCRIPTION PERFORMER ISRC BARCODE
+#:   没有（从不查）：PUBLISHER LABEL LANGUAGE COMPOSER LYRICIST GROUPING
+#: 所以 `publisher`（唱片公司）、`language`（语言）、`comment`（备注）写了也是白写，
+#: 一律不写；`composer` 虽然 dhowden/tag 有 Composer()，但服务端查表里没有这个键，
+#: 而且本应用的字段开关里也没有它，同样不写。
+READ_BY_FEINIU = {
+    "title", "artist", "album", "album_artist",
+    "YEAR", "genre", "track", "track_total", "disc", "lyrics", "cover",
+}
+
+#: 兜底告警：万一以后有人加了新字段却忘了确认「飞牛音乐读不读」，动静要看得见
+_UNCHECKED_WRITE_FIELDS: set = set()
+
+
+def _guard(key: str) -> bool:
+    """写入前的最后一道闸：不在 READ_BY_FEINIU 清单里的字段直接丢弃（并留一行日志）。"""
+    if key in READ_BY_FEINIU:
+        return True
+    if key not in _UNCHECKED_WRITE_FIELDS:
+        _UNCHECKED_WRITE_FIELDS.add(key)
+        print(f"[writer] 跳过字段 {key!r}：飞牛音乐不读这个标签，按约定不写")
+    return False
+
+
 def _vorbis_fields(meta: SongMeta) -> Dict[str, str]:
     """VorbisComment 字段（flac / ogg 共用）。
 
@@ -61,33 +94,27 @@ def _vorbis_fields(meta: SongMeta) -> Dict[str, str]:
     `YEAR` 是飞牛音乐服务端真正读的那份（必须是纯数字年份）。
     """
     fields: Dict[str, str] = {}
-    if meta.title:
+    if meta.title and _guard("title"):
         fields["title"] = meta.title
-    if meta.artist:
+    if meta.artist and _guard("artist"):
         fields["artist"] = meta.artist
-    if meta.album:
+    if meta.album and _guard("album"):
         fields["album"] = meta.album
-    if meta.album_artist:
+    if meta.album_artist and _guard("album_artist"):
         fields["albumartist"] = meta.album_artist
-    if meta.date:
+    if meta.date and _guard("YEAR"):
         fields["date"] = meta.date
         year = _year_only(meta.date)
         if year:
             fields["YEAR"] = year
-    if meta.genre:
+    if meta.genre and _guard("genre"):
         fields["genre"] = meta.genre
-    if meta.track:
+    if meta.track and _guard("track"):
         fields["tracknumber"] = meta.track
-    if meta.track_total:
+    if meta.track_total and _guard("track_total"):
         fields["tracktotal"] = meta.track_total
-    if meta.disc:
+    if meta.disc and _guard("disc"):
         fields["discnumber"] = meta.disc
-    if meta.publisher:
-        fields["publisher"] = meta.publisher
-    if meta.language:
-        fields["language"] = meta.language
-    if meta.comment:
-        fields["comment"] = meta.comment
     return fields
 
 
@@ -107,64 +134,58 @@ def _write_vorbis(audio, meta: SongMeta) -> None:
 
 
 def _write_id3(audio, meta: SongMeta) -> None:
-    from mutagen.id3 import (COMM, TALB, TCON, TDRC, TIT2, TLAN, TPE1, TPE2,
-                             TPOS, TPUB, TRCK)
+    from mutagen.id3 import TALB, TCON, TDRC, TIT2, TPE1, TPE2, TPOS, TRCK
 
     if audio.tags is None:
         audio.add_tags()
     tags = audio.tags
     enc = 3  # UTF-8
-    if meta.title:
+    if meta.title and _guard("title"):
         tags.add(TIT2(encoding=enc, text=[meta.title]))
-    if meta.artist:
+    if meta.artist and _guard("artist"):
         tags.add(TPE1(encoding=enc, text=[meta.artist]))
-    if meta.album:
+    if meta.album and _guard("album"):
         tags.add(TALB(encoding=enc, text=[meta.album]))
-    if meta.album_artist:
+    if meta.album_artist and _guard("album_artist"):
         tags.add(TPE2(encoding=enc, text=[meta.album_artist]))
-    if meta.date:
+    if meta.date and _guard("YEAR"):
         tags.add(TDRC(encoding=enc, text=[meta.date]))
-    if meta.genre:
+    if meta.genre and _guard("genre"):
         tags.add(TCON(encoding=enc, text=[meta.genre]))
     track = _track_str(meta)
-    if track:
+    if track and _guard("track"):
         tags.add(TRCK(encoding=enc, text=[track]))
-    if meta.disc:
+    if meta.disc and _guard("disc"):
         tags.add(TPOS(encoding=enc, text=[meta.disc]))
-    if meta.publisher:
-        tags.add(TPUB(encoding=enc, text=[meta.publisher]))
-    if meta.language:
-        tags.add(TLAN(encoding=enc, text=[meta.language]))
-    if meta.comment:
-        tags.add(COMM(encoding=enc, lang="chi", desc="", text=[meta.comment]))
     audio.save()
 
 
 def _write_ape(audio, meta: SongMeta) -> None:
+    """APE（`.ape`）写入。
+
+    注意：飞牛音乐**根本不索引 .ape 文件**，所以这里的键名没有一个会被官方音乐读到，
+    保留只是为了让「批量处理 ape 文件」不至于报错。按「不读就不写」的原则，
+    只有 title/artist/album/album_artist/date/genre/track 这些最常见的写，
+    publisher / language / comment 一律不写（官方不读）。
+    """
     if audio.tags is None:
         audio.add_tags()
     tags = audio.tags
-    if meta.title:
+    if meta.title and _guard("title"):
         tags["Title"] = meta.title
-    if meta.artist:
+    if meta.artist and _guard("artist"):
         tags["Artist"] = meta.artist
-    if meta.album:
+    if meta.album and _guard("album"):
         tags["Album"] = meta.album
-    if meta.album_artist:
+    if meta.album_artist and _guard("album_artist"):
         tags["Album Artist"] = meta.album_artist
-    if meta.date:
+    if meta.date and _guard("YEAR"):
         tags["Date"] = meta.date
-    if meta.genre:
+    if meta.genre and _guard("genre"):
         tags["Genre"] = meta.genre
     track = _track_str(meta)
-    if track:
+    if track and _guard("track"):
         tags["Track"] = track
-    if meta.publisher:
-        tags["Publisher"] = meta.publisher
-    if meta.language:
-        tags["Language"] = meta.language
-    if meta.comment:
-        tags["Comment"] = meta.comment
     audio.save()
 
 

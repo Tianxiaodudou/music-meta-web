@@ -1581,10 +1581,16 @@ async function loadConfig(){
   }catch(e){ msg("读取配置失败：" + (e.message||e)); }
 }
 function renderFieldChecks(){
-  $("afChecks").innerHTML = fieldDefs.map(f =>
-    `<label style="font-size:13px"><input type="checkbox" value="${f.key}"
-      ${isActive(f.key)?"checked":""} onchange="toggleField('${f.key}', this.checked)"> ${esc(f.label)}</label>`
-  ).join("");
+  // 只写「飞牛音乐会读」的标签：不可写的字段（唱片公司/语言）显示为不可勾选，
+  // 免得勾了却没效果 —— 官方音乐根本不读这些标签。
+  $("afChecks").innerHTML = fieldDefs.map(f => {
+    if(f.writable === false){
+      return `<label style="font-size:13px;opacity:.45;cursor:not-allowed"
+        title="飞牛音乐不读这个标签，勾了也不会写进文件"><input type="checkbox" disabled> ${esc(f.label)}<span style="opacity:.8">（官方不读，不写）</span></label>`;
+    }
+    return `<label style="font-size:13px"><input type="checkbox" value="${f.key}"
+      ${isActive(f.key)?"checked":""} onchange="toggleField('${f.key}', this.checked)"> ${esc(f.label)}</label>`;
+  }).join("");
   updateFieldSummary();
 }
 function toggleField(key, on){
@@ -1593,7 +1599,7 @@ function toggleField(key, on){
   updateFieldSummary();
 }
 function updateFieldSummary(){
-  const names = fieldDefs.filter(f => isActive(f.key)).map(f => f.label);
+  const names = fieldDefs.filter(f => isActive(f.key) && f.writable !== false).map(f => f.label);
   $("afSummary").textContent = names.length ? `已生效：${names.join("、")}` : "未选择任何字段（将不显示、不写入任何字段）";
 }
 function toggleFieldDrop(ev){
@@ -1623,7 +1629,8 @@ async function saveConfig(){
       music_dir: $("music_dir").value.trim(),
       recursive: $("recursive").checked,
       write_enabled: $("write_enabled").checked,
-      active_fields: fieldDefs.filter(f => isActive(f.key)).map(f => f.key),
+      // 只保存「可写」字段：官方不读的标签永远不进生效字段
+      active_fields: fieldDefs.filter(f => f.writable !== false && isActive(f.key)).map(f => f.key),
       min_interval: parseFloat($("min_interval").value) || 0.3,
       concurrency: parseInt($("concurrency").value) || 1,
       source_limit: parseInt($("source_limit").value) || 10,
