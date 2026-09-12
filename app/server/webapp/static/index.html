@@ -1301,7 +1301,10 @@ async function run(){
       const parts = [];
       if(r.count) parts.push(`${r.count} 首待刮削`);
       if(r.unwritten) parts.push(`${r.unwritten} 首已匹配待写入`);
-      msg(`刮削已启动${parts.length ? "（" + parts.join("、") + "）" : ""}`);
+      let m = `刮削已启动${parts.length ? "（" + parts.join("、") + "）" : ""}`;
+      // 上次被重启打断、卡在「处理中」的歌会被放回队列一起刮
+      if(r.recovered) m += `；已把上次中断的 ${r.recovered} 首放回待刮削`;
+      msg(m);
     }
     else msg("没有启动：" + (r.reason || "未知原因"));
     poll();

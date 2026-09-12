@@ -678,6 +678,10 @@ def run():
     if not scheduler.resolve_sources(cfg):
         return {"started": False,
                 "reason": "没有可用的数据源插件：请在设置里勾选已安装的插件（插件放到插件目录后需重启应用）"}
+    # 应用重启会打断正在处理的歌，留下 status=processing 的孤儿任务；
+    # 只有 worker 启动时才会回收它们，所以这里先回收一次，否则这些歌会被永远漏掉
+    # （1.4.4：升级/重启后点「开始刮削」时，若队列里还有 processing，它会先被放回待刮削）。
+    recovered = db.recover_stale_processing()
     pending = db.count_tasks("pending")
     # 「已匹配但没写入」的歌也算活儿：开启写入后点开始刮削会先把它们写掉
     unwritten = db.count_unwritten_auto_ok() if cfg.get("write_enabled") == "1" else 0
@@ -685,8 +689,11 @@ def run():
         return {"started": False,
                 "reason": "没有可刮的歌：既没有「待刮削」的任务，也没有「已匹配未写入」的歌"}
     ok = scheduler.start_scraper()
-    return {"started": ok, "count": pending, "unwritten": unwritten,
-            "reason": "" if ok else "启动失败：已有刮削在运行中"}
+    out = {"started": ok, "count": pending, "unwritten": unwritten,
+           "reason": "" if ok else "启动失败：已有刮削在运行中"}
+    if recovered:
+        out["recovered"] = recovered      # 本轮开跑前从 processing 放回待刮削的条数
+    return out
 
 
 @app.post("/api/stop")
