@@ -91,6 +91,11 @@ DEFAULTS: Dict[str, str] = {
 #: 处理记录（永久记忆）能记下的三种标签——其余状态不落记忆（记忆跟随状态走）
 MEMORY_STATUSES = ("manual_done", "error", "skipped")
 
+#: 「处理记录」兜底识别（大小对不上、只能读内容算哈希）时，一次扫描允许花的最长时间（秒）。
+#: 正常情况走不到这里：只有记录里存在「不知道文件大小」的哈希（例如记录写入时文件已不在）才会用上。
+#: 设上限是为了不让几条脏记录把整库读一遍 —— 那会让扫描看起来像卡死（2026-09-12 的真实故障）。
+FALLBACK_HASH_BUDGET = 15.0
+
 #: 命中永久记忆、从记录还原标签时写入任务备注的固定文案（扫描 / 刮削 / 导入共用一处）
 MANUAL_NOTE = "已人工处理过（永久记忆），已自动标记为「已人工」"
 MEMORY_NOTES = {
@@ -140,7 +145,7 @@ def init_db() -> None:
             c.execute("UPDATE manual_done SET status='manual_done' "
                       "WHERE status IS NULL OR TRIM(status)=''")
         rows = c.execute("SELECT file_path FROM manual_done "
-                         "WHERE file_size IS NULL").fetchall()
+                         "WHERE file_size IS NULL OR file_size <= 0").fetchall()
         for r in rows:
             try:
                 size = os.path.getsize(r["file_path"])
@@ -605,7 +610,13 @@ def memory_status_map(paths) -> Dict[str, str]:
     先按路径命中（绝大多数情况，零成本）；未命中的再用「大小 + 内容 sha256」
     兜底识别被改名/搬家过的文件——先用 file_size 做筛子，大小对不上就不读内容，
     因此整个音乐库扫描只是每文件一次 stat，不会把整库都哈希一遍。
-    旧库中大小未知（文件早已搬走）的记录会让整表退化为逐个哈希比对（与旧行为一致）。
+
+    ⚠ 大小筛选的两个前提（2026-09-12 修，扫库「卡住/0 首」的根因）：
+    1. 只有**大于 0** 的大小才算「已知大小」。文件已被删除/搬走的旧记录 size 可能是 0，
+       若把它当已知值，真实文件的大小永远对不上任何记录的 size，
+       于是每个文件都要读整文件算 sha256（整库几十 GB，扫描表现为永远「扫不到」）。
+    2. 一条记录的哈希也认不出来时，不再对**剩下所有文件**逐个算哈希（见下方 hashing 开关）：
+       库越大越亏，且有上限兜底，避免一次扫描把整库读完。
     """
     paths = list(paths)
     if not paths:
@@ -625,17 +636,40 @@ def memory_status_map(paths) -> Dict[str, str]:
     by_hash = {r["file_hash"]: _st(r) for r in rows if r["file_hash"]}
     if not by_hash:
         return hits
-    sizes = {int(r["file_size"]) for r in rows if r["file_size"]}
+    sizes = {int(r["file_size"]) for r in rows if r["file_size"] and int(r["file_size"]) > 0}
     # 有哈希但不知道大小的记录：无法用大小筛选，只能对剩余文件逐个算哈希
-    size_unknown = any(r["file_hash"] and not r["file_size"] for r in rows)
+    size_unknown = any(r["file_hash"] and not (r["file_size"] and int(r["file_size"]) > 0)
+                       for r in rows)
+    if not size_unknown:
+        # 快路径：大小这个筛子可用，只有大小能对上记录的文件才需要读内容
+        for p in paths:
+            if p in hits:
+                continue
+            try:
+                size = os.path.getsize(p)
+            except OSError:
+                continue
+            if size not in sizes:
+                continue
+            h = file_sha256(p)
+            if h in by_hash:
+                hits[p] = by_hash[h]
+        return hits
+
+    # 兜底路径：记录里存在「不知道大小」的哈希（例如写入记录那一刻文件就已经没了）。
+    # 这段只在脏记录存在时才会走到：最多花 FALLBACK_HASH_BUDGET 秒做「改名/搬家」识别，
+    # 绝不把整库读完 —— 否则界面看起来就是「扫描卡住 / 永远 0 首」
+    # （2026-09-12 真实故障：一条 size=0 的已删除文件曾让整库每个文件都算一遍 sha256）。
+    deadline = time.monotonic() + FALLBACK_HASH_BUDGET
     for p in paths:
         if p in hits:
             continue
+        if time.monotonic() > deadline:
+            break
         try:
-            size = os.path.getsize(p)
+            if not os.path.getsize(p):
+                continue
         except OSError:
-            continue
-        if not size_unknown and size not in sizes:
             continue
         h = file_sha256(p)
         if h in by_hash:
