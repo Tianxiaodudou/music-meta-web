@@ -375,8 +375,16 @@ def _write_fields(path: str, meta: SongMeta, src, cfg: dict) -> list:
         value = getattr(meta, attr, "")
         if key in active and has(value):
             setattr(partial, attr, str(value).strip())
-    if has(meta.track_total):
+    # 总曲目数也归「生效字段」管：没勾选就不写（与其它字段一致）
+    if has(meta.track_total) and "track_total" in active:
         partial.track_total = str(meta.track_total).strip()
+        # mp3/ape 把「曲目号/总曲目」合并成一个帧（7/12）：候选只给了总数时，
+        # 用文件里已有的曲目号凑成 N/总数，避免总数被静默丢掉
+        if not partial.track and os.path.splitext(path)[1].lower() in (".mp3", ".ape"):
+            try:
+                partial.track = str(writer.read_tags(path).get("track") or "").strip()
+            except Exception:
+                partial.track = ""
     if partial.title or partial.artist or partial.date or partial.album \
             or partial.album_artist or partial.genre or partial.track \
             or partial.disc or partial.publisher or partial.language:
@@ -386,7 +394,8 @@ def _write_fields(path: str, meta: SongMeta, src, cfg: dict) -> list:
                      ("album_artist", partial.album_artist),
                      ("genre", partial.genre), ("track", partial.track),
                      ("disc", partial.disc), ("company", partial.publisher),
-                     ("language", partial.language)):
+                     ("language", partial.language),
+                     ("track_total", partial.track_total)):
             if v:
                 written.append(k)
     if "cover" in active:

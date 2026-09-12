@@ -1022,16 +1022,6 @@ _FIELD_ATTR = {
     "publisher": "publisher", "language": "language", "comment": "comment",
 }
 
-# 字段选择 -> 写入开关（人工选用时按勾选决定写哪些字段）
-FIELD_SWITCH = {
-    "title": "write_title", "artist": "write_artist", "year": "write_year",
-    "album": "write_album", "album_artist": "write_album_artist",
-    "genre": "write_genre", "track": "write_track", "disc": "write_disc",
-    "company": "write_company", "language": "write_language",
-    "cover": "write_cover", "lyrics": "write_lyrics",
-}
-
-
 class FieldWriteBody(BaseModel):
     file: str
     field: str
@@ -1079,6 +1069,12 @@ def field_write(body: FieldWriteBody):
             raise HTTPException(400, "值不能为空")
         meta = SongMeta()
         setattr(meta, _FIELD_ATTR[field], value)
+        # 手动写「总曲目数」时，mp3/ape 的帧是合并形式（7/12），补上文件里已有的曲目号，
+        # 否则只写总数会写不进去
+        if field == "track_total" and os.path.splitext(path)[1].lower() in (".mp3", ".ape"):
+            cur_track = str(_w.read_tags(path).get("track") or "").strip()
+            if cur_track:
+                meta.track = cur_track
         try:
             _w.write_metadata(path, meta)
         except OSError as exc:

@@ -33,6 +33,7 @@ FIELDS: Tuple[FieldDef, ...] = (
     FieldDef("year", "年份", "date", "date"),
     FieldDef("genre", "流派", "genre", "genre"),
     FieldDef("track", "曲目号", "track", "track"),
+    FieldDef("track_total", "总曲目数", "track_total", "track_total"),
     FieldDef("disc", "碟号", "disc", "disc"),
     FieldDef("publisher", "唱片公司", "publisher", "publisher"),
     FieldDef("language", "语言", "language", "language"),
