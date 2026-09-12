@@ -129,8 +129,11 @@ def init_db() -> None:
             c.execute("UPDATE manual_done SET file_size=? WHERE file_path=?",
                       (size, r["file_path"]))
         # 清理已废弃的配置键（旧版逐个字段的 write_* 开关与 threshold，
-        # 现由 active_fields 与「文件名反推校验」取代）
-        c.execute("DELETE FROM config WHERE key LIKE 'write\\_%' ESCAPE '\\' "
+        # 现由 active_fields 与「文件名反推校验」取代）。
+        # 注意要排除 write_enabled：它也匹配 write\_% 通配，早期版本会把它一起删掉，
+        # 导致「启用真实写入」每次重启被悄悄重置回学习模式。
+        c.execute("DELETE FROM config WHERE "
+                  "(key LIKE 'write\\_%' ESCAPE '\\' AND key <> 'write_enabled') "
                   "OR key IN ('threshold', 'idle_exit_minutes')")
         for key, value in DEFAULTS.items():
             c.execute("INSERT OR IGNORE INTO config(key, value) VALUES(?, ?)",
@@ -274,7 +277,7 @@ def set_status(path: str, status: str, error: str = "",
                written: Optional[str] = None) -> int:
     """只改任务状态（保留匹配结果/得分/已匹配的歌名歌手等字段），返回受影响行数。
 
-    written 为 None 时不动该列；传入时一并更新（用于「补写/批量写入」记录写了哪些字段）。
+    written 为 None 时不动该列；传入时一并更新（用于记录「本次写入了哪些字段」）。
     """
     now = time.strftime("%Y-%m-%d %H:%M:%S")
     with connect() as c:
@@ -323,6 +326,14 @@ def list_tasks(status: Optional[str] = None, limit: int = 200,
     with connect() as c:
         rows = c.execute(q, params).fetchall()
     return [dict(r) for r in rows]
+
+
+def count_unwritten_auto_ok() -> int:
+    """已自动匹配、但还没写进文件的歌（学习模式下匹配到的那些）。"""
+    with connect() as c:
+        return c.execute(
+            "SELECT COUNT(*) AS n FROM tasks WHERE status='auto_ok' "
+            "AND (written IS NULL OR TRIM(written)='')").fetchone()["n"]
 
 
 def count_tasks(status: Optional[str] = None) -> int:
@@ -595,7 +606,7 @@ def decide(file_path: str, songmid: str, skip: bool = False) -> None:
     """留档一次「选定/跳过」，并把任务改成当前生效的状态。
 
     注意：「已人工」标签与永久记忆只由人工逐条操作产生（队列里指定状态、
-    手动刮削窗口写字段），批量处理与补写**不产生**已人工 ——
+    手动刮削窗口写字段），批量处理与自动刮削**不产生**已人工 ——
     写入成功记为 auto_ok（自动写入），跳过记为 skipped。
     """
     now = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -612,7 +623,7 @@ def decide(file_path: str, songmid: str, skip: bool = False) -> None:
 def drop_decision(file_path: str) -> None:
     """清掉该文件的选择记录（人工改状态/重新排队时调用）。
 
-    历史状态不参与后续判断，留着只会让「补写为什么跳过」这类问题无迹可循。
+    历史状态不参与后续判断，留着只会让「这首歌为什么被跳过」这类问题无迹可循。
     """
     with connect() as c:
         c.execute("DELETE FROM decisions WHERE file_path=?", (file_path,))
@@ -626,11 +637,15 @@ def get_decision(file_path: str) -> Optional[dict]:
 
 
 def unskip_all() -> int:
-    """把 skipped 的任务恢复为 manual_pending（撤销误批量跳过）。"""
+    """把 skipped 的任务恢复为 manual_pending（撤销误批量跳过）。
+
+    同时清掉这些文件的选择记录与永久记忆：记忆只跟随「已人工」状态存在。
+    """
     with connect() as c:
         rows = c.execute("SELECT path FROM tasks WHERE status='skipped'").fetchall()
         for r in rows:
             c.execute("DELETE FROM decisions WHERE file_path=?", (r["path"],))
+            c.execute("DELETE FROM manual_done WHERE file_path=?", (r["path"],))
         cur = c.execute(
             "UPDATE tasks SET status='manual_pending', error='已从批量跳过中恢复' "
             "WHERE status='skipped'")
@@ -638,8 +653,10 @@ def unskip_all() -> int:
 
 
 def retry_errors() -> int:
-    """把 error 状态的任务恢复为 pending 以便重试。"""
+    """把 error 状态的任务恢复为 pending 以便重试（一并清掉永久记忆）。"""
     with connect() as c:
+        c.execute("DELETE FROM manual_done WHERE file_path IN "
+                  "(SELECT path FROM tasks WHERE status='error')")
         cur = c.execute(
             "UPDATE tasks SET status='pending', error=NULL WHERE status='error'")
         return cur.rowcount
@@ -656,6 +673,7 @@ def requeue_status(status: str) -> int:
         for r in rows:
             c.execute("DELETE FROM candidates WHERE file_path=?", (r["path"],))
             c.execute("DELETE FROM decisions WHERE file_path=?", (r["path"],))
+            c.execute("DELETE FROM manual_done WHERE file_path=?", (r["path"],))
         cur = c.execute(
             "UPDATE tasks SET status='pending', error=NULL WHERE status=?", (status,))
         return cur.rowcount

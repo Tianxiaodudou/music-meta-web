@@ -258,6 +258,11 @@ def delete_task(body: DeleteTaskBody):
     if not (f.startswith(root + os.sep) or f == root):
         raise HTTPException(403, f"文件不在已配置的音乐目录内，拒绝删除: {path}")
 
+    # 学习模式绝不删音乐文件（只删任务记录不受影响）
+    if body.delete_file and db.get_config().get("write_enabled") != "1":
+        raise HTTPException(400, "学习模式下不会删除音乐文件：请先在设置里勾选"
+                                 "「启用真实写入」；只想把这首歌移出队列，请用「只删除任务」")
+
     file_deleted = False
     if body.delete_file:
         if os.path.isfile(f):
@@ -278,50 +283,6 @@ def retry_error_tasks():
     """把 error 任务恢复为 pending 重试。"""
     n = db.retry_errors()
     return {"retried": n}
-
-
-@app.post("/api/write-auto")
-def write_auto():
-    """写入阶段：把已自动匹配（auto_ok）但尚未写入的文件按缓存候选补写。
-
-    需要：网页勾选「启用写入」且音乐目录为可写挂载。
-    只处理「当前还没有写入记录」的任务（不看历史选择记录：状态只认当前生效的那份）。
-    写入成功仍记为「自动写入」——「已人工」只由人工逐条操作产生。
-    返回写入数与跳过数（无候选的跳过）。
-    """
-    cfg = db.get_config()
-    if cfg.get("write_enabled") != "1":
-        raise HTTPException(400, "未启用写入：请先在配置里勾选「启用写入」")
-    src = _resolve_src("", float(cfg.get("min_interval", "0.3")))
-    from musicmeta.sources.base import SongMeta
-    written = skipped = failed = 0
-    for t in db.list_tasks("auto_ok", limit=100000):
-        path = t["path"]
-        if (t.get("written") or "").strip():
-            continue  # 已经写过（当前状态里记着），不必重复
-        cands = db.get_candidates(path)
-        if not cands:
-            skipped += 1
-            continue
-        top = cands[0]
-        meta = SongMeta(
-            title=top["title"], artist=top["artist"],
-            album=top["album"], date=top["year"],
-            song_id=top["songmid"], album_id=top["albummid"],
-            source=top.get("source") or "")
-        try:
-            try:
-                if src is not None:
-                    meta = scheduler.enrich_cached(src, meta)
-            except Exception:
-                pass
-            w = scheduler._write_fields(path, meta, src, cfg)
-            db.decide(path, top["songmid"], skip=False)     # 状态 → 自动写入
-            db.set_status(path, "auto_ok", written=",".join(w))
-            written += 1
-        except Exception:
-            failed += 1
-    return {"written": written, "skipped": skipped, "failed": failed}
 
 
 # 任务元数据过滤缓存：文件标签按 mtime 失效；过滤结果按条件组合缓存 60 秒
@@ -487,12 +448,12 @@ def set_task_status(body: TaskStatusBody):
         except Exception:
             pass
     else:
-        if status in ("pending", "manual_pending", "auto_ok"):
-            # 离开「已人工」时清掉永久记忆，否则下次扫描又会被排除
-            try:
-                db.remove_manual_done(path)
-            except Exception:
-                pass
+        # 记忆跟随状态走：只要不是「已人工」，就一并清掉永久记忆
+        # （否则下次扫描/刮削又会被自动标回「已人工」）
+        try:
+            db.remove_manual_done(path)
+        except Exception:
+            pass
         try:
             db.drop_decision(path)   # 旧的选择/跳过记录不再参与判断
         except Exception:
@@ -639,10 +600,13 @@ def run():
         return {"started": False,
                 "reason": "没有可用的数据源插件：请在设置里勾选已安装的插件（插件放到插件目录后需重启应用）"}
     pending = db.count_tasks("pending")
-    if not pending:
-        return {"started": False, "reason": "没有待刮削的任务：先点「扫描目录」"}
+    # 「已匹配但没写入」的歌也算活儿：开启写入后点开始刮削会先把它们写掉
+    unwritten = db.count_unwritten_auto_ok() if cfg.get("write_enabled") == "1" else 0
+    if not pending and not unwritten:
+        return {"started": False,
+                "reason": "没有可刮的歌：既没有「待刮削前」的任务，也没有「已匹配未写入」的歌"}
     ok = scheduler.start_scraper()
-    return {"started": ok, "count": pending,
+    return {"started": ok, "count": pending, "unwritten": unwritten,
             "reason": "" if ok else "启动失败：已有刮削在运行中"}
 
 
@@ -1045,6 +1009,9 @@ def field_write(body: FieldWriteBody):
     field = body.field.strip()
     value = body.value.strip()
     cfg = db.get_config()
+    # 学习模式（未启用写入）绝不改音乐文件：手动窗口只预览，不落盘
+    if cfg.get("write_enabled") != "1":
+        raise HTTPException(400, "学习模式下不会写入音乐文件：请先在设置里勾选「启用真实写入」")
     # 只允许写入「生效字段」：未勾选的字段在应用里不存在，接口层一并拦住
     if field in FIELD_MAP and field not in active_fields(cfg):
         raise HTTPException(400, f"字段「{FIELD_MAP[field].label}」未生效，"
@@ -1085,12 +1052,11 @@ def field_write(body: FieldWriteBody):
     scheduler._restore_owner(path)
     # 标签已变更：使该文件的过滤缓存/标签缓存失效（修复字段后从过滤器消失）
     _invalidate_filter_cache(path)
-    # 手动逐条写入 + 写入模式开启 → 永久记忆 + 打「已人工」标签
-    # （「已人工」只由人工逐条操作产生；批量/补写不会产生这个标签）
-    if cfg.get("write_enabled") == "1":
-        try:
-            db.record_manual_done(path)
-            db.set_status(path, "manual_done", error=db.MANUAL_NOTE)
-        except Exception:
-            pass
+    # 能走到这里就说明已启用写入：这是「人工逐条」的写文件动作
+    # → 永久记忆 + 打「已人工」标签（批量操作与自动刮削都不会产生这个标签）
+    try:
+        db.record_manual_done(path)
+        db.set_status(path, "manual_done", error=db.MANUAL_NOTE)
+    except Exception:
+        pass
     return {"ok": True, "field": field}

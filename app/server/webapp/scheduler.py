@@ -566,6 +566,14 @@ class Scraper(threading.Thread):
             # 每处理 N 首暂停 X 秒（风控：避免长时间持续请求）
             self._pause_every = max(0, int(float(cfg.get("pause_every", "0") or 0)))
             self._pause_seconds = max(0.0, float(cfg.get("pause_seconds", "5") or 0))
+            # 开启写入时，先把「上次学习模式匹配到、但还没写进文件」的歌按缓存候选补写上：
+            # 这一能力原先是个独立的「补写」按钮，现在折进「开始刮削」——
+            # 打开写入后点一次开始刮削，搜索与写入一次做完。
+            if cfg.get("write_enabled") == "1":
+                try:
+                    self._write_cached(cfg)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[scheduler] 补写已匹配歌曲异常: {exc}")
             pool = [threading.Thread(target=self._worker, args=(cfg,),
                                      daemon=True) for _ in range(workers)]
             for t in pool:
@@ -576,6 +584,50 @@ class Scraper(threading.Thread):
             self.error = str(exc)
         finally:
             self.running = False
+
+    def _write_cached(self, cfg: dict) -> None:
+        """把「已自动匹配但还没写入文件」的歌按缓存候选写入（原「补写」功能）。
+
+        学习模式下匹配到的歌状态是 auto_ok 且没有写入记录；打开写入后点「开始刮削」
+        会先走这一步把它们写掉，然后再正常刮「待刮削前」的歌。
+        """
+        sources = resolve_sources(cfg)
+        written = failed = 0
+        for t in db.list_tasks("auto_ok", limit=100000):
+            path = t["path"]
+            if (t.get("written") or "").strip():
+                continue                       # 已经写过
+            if self.scope and path not in self.scope:
+                continue                       # 只刮指定范围时不动其它歌
+            if self._limit_reached():
+                break
+            cands = db.get_candidates(path)
+            if not cands:
+                continue                       # 无候选：留给「重新刮削」去搜
+            top = cands[0]
+            meta = SongMeta(title=top["title"], artist=top["artist"],
+                            album=top["album"], date=top["year"],
+                            song_id=top["songmid"], album_id=top["albummid"],
+                            source=top.get("source") or "")
+            src = next((x for x in sources if getattr(x, "name", "") == meta.source),
+                       sources[0] if sources else None)
+            try:
+                try:
+                    if src is not None:
+                        meta = enrich_cached(src, meta)
+                except Exception:
+                    pass
+                fields = _write_fields(path, meta, src, cfg)
+                db.set_status(path, "auto_ok", written=",".join(fields))
+                written += 1
+            except Exception as exc:  # noqa: BLE001
+                db.set_status(path, "error", error=_cn_err(exc))
+                failed += 1
+            with self._done_lock:
+                self._done += 1
+        if written or failed:
+            print(f"[scheduler] 已匹配未写入的歌曲：补写 {written} 首"
+                  f"{f'，失败 {failed} 首' if failed else ''}", flush=True)
 
     def _worker(self, cfg: dict) -> None:
         pdir = cfg.get("plugins_dir", "").strip()

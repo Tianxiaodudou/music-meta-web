@@ -559,7 +559,7 @@
     <div style="display:flex;gap:10px;flex-wrap:wrap">
       <button class="secondary" onclick="closeDel()">取消</button>
       <button class="warn" onclick="doDeleteTask(false)">🗑 只删除任务（保留音乐文件）</button>
-      <button class="danger" onclick="doDeleteTask(true)">🗑 删除任务 + 音乐文件本体</button>
+      <button class="danger" id="delFileBtn" onclick="doDeleteTask(true)">🗑 删除任务 + 音乐文件本体</button>
     </div>
   </div>
 </div>
@@ -591,6 +591,7 @@ const ST_LABEL = Object.fromEntries(STATUSES.map(s => [s.key, s.label]));
 let fieldDefs = [];                 // [{key,label,special}]（/api/fields）
 let activeFields = [];              // 生效字段 key 列表
 let manualStats = {};               // 人工处理记录统计（/api/config 返回）
+let writeEnabled = false;           // 是否启用真实写入（学习模式下手动窗口只预览、不落盘）
 let qState = {status:"all", q:"", page:0};   // 队列当前过滤/分页
 let queueItems = [];                // 当前页任务（供菜单回调取数据）
 let delFile = "";
@@ -777,8 +778,7 @@ function renderBatchBar(){
               `<button class="warn" onclick="batchSkip()">批量跳过</button>`,
               `<button class="secondary" onclick="reprocessPending()">🔄 重新刮削本队列</button>`);
   if(qState.status === "auto_ok")
-    acts.push(`<button class="secondary" onclick="exportAutoOk()">💾 导出已写入到缓存</button>`,
-              `<button class="secondary" onclick="writeAuto()">✍ 补写入未写入的</button>`);
+    acts.push(`<button class="secondary" onclick="exportAutoOk()">💾 导出已写入到缓存</button>`);
   if(qState.status === "skipped")
     acts.push(`<button class="secondary" onclick="unskipAll()">↩ 全部恢复为待刮削前</button>`);
   if(qState.status === "error")
@@ -893,7 +893,13 @@ function confirmDelete(file, name){
     `① <b>只删除任务</b> — 只把这首歌从队列移除，音乐文件保留在磁盘上；<br>` +
     `② <b>删除任务 + 文件本体</b> — 任务和磁盘上的音乐文件都会删除，无法找回。<br><br>` +
     `<span class="muted">两种方式都会保留「人工处理记录」：重新扫描时这首歌仍会标为「已人工」，
-     要让它重新刮削，请先把状态指定为「待处理」。</span>`;
+     要让它重新刮削，请先把状态指定为「待处理」。</span>` +
+    (writeEnabled ? "" :
+     `<br><br><b style="color:var(--warn)">⚠ 当前是学习模式：不会删除磁盘上的音乐文件</b>
+      <span class="muted">（要删文件请先在设置里勾选「启用真实写入」）</span>`);
+  const btn = $("delFileBtn");
+  btn.disabled = !writeEnabled;   // 学习模式：不提供删文件本体的入口
+  btn.title = writeEnabled ? "" : "学习模式下不会删除音乐文件（先在设置里勾选「启用真实写入」）";
   $("delModal").classList.add("open");
   document.body.style.overflow = "hidden";
 }
@@ -949,7 +955,8 @@ function renderScrub(){
   const maxCands = d.fields.reduce((a,f)=> Math.max(a, f.candidates.length), 0);
   $("scMeta").textContent =
     `候选 ${maxCands} 条/字段｜通过校验 ${d.verified} 条｜` +
-    `候选词：${(d.queries||[]).join(" / ") || "—"}`;
+    `候选词：${(d.queries||[]).join(" / ") || "—"}` +
+    (writeEnabled ? "" : "｜⚠ 学习模式：只预览不写入（要改请先在设置里勾选「启用真实写入」）");
   // 播放器 + 歌词同步（打开窗口即开始播放）
   const a = $("scAudio");
   a.src = BASE + "api/stream/" + encodeURIComponent(sc.file);
@@ -993,16 +1000,20 @@ function fieldRowHtml(f){
     <div class="sr-cell"><span class="sr-tag">候选</span>${inputHtml}</div>
     <div class="sr-btns">
       <button class="secondary" onclick="toggleCandMenu(event, '${f.key}')">手动刮削 ▾</button>
-      <button class="ok" id="wr_${f.key}" onclick="writeField('${f.key}')" disabled>写入</button>
+      <button class="ok" id="wr_${f.key}" onclick="writeField('${f.key}')"${writeEnabled ? " disabled" : ' disabled title="学习模式下不会写入文件（先在设置里勾选「启用真实写入」）"'}>写入</button>
     </div>
   </div>`;
 }
 function syncWrite(key){
   const v = ($("in_" + key).value || "").trim();
-  $("wr_" + key).disabled = !v;
+  const btn = $("wr_" + key);
+  btn.disabled = !v || !writeEnabled;
+  btn.title = writeEnabled ? "" : "学习模式下不会写入文件（先在设置里勾选「启用真实写入」）";
 }
 function syncLyricsWrite(){
-  $("scLrcWrite").disabled = !($("scLrcCand").value || "").trim();
+  const btn = $("scLrcWrite");
+  btn.disabled = !($("scLrcCand").value || "").trim() || !writeEnabled;
+  btn.title = writeEnabled ? "" : "学习模式下不会写入文件（先在设置里勾选「启用真实写入」）";
 }
 
 // 候选值下拉：只列该字段的候选值（不展示整条结果）
@@ -1252,7 +1263,12 @@ async function scan(){
 async function run(){
   try{
     const r = await jsonPost("/api/run", {});
-    if(r.started) msg(`刮削已启动${r.count ? "（"+r.count+" 首待处理）" : ""}`);
+    if(r.started){
+      const parts = [];
+      if(r.count) parts.push(`${r.count} 首待刮削`);
+      if(r.unwritten) parts.push(`${r.unwritten} 首已匹配待写入`);
+      msg(`刮削已启动${parts.length ? "（" + parts.join("、") + "）" : ""}`);
+    }
     else msg("没有启动：" + (r.reason || "未知原因"));
     poll();
   }catch(e){ msg("启动失败：" + (e.message||e)); }
@@ -1318,13 +1334,6 @@ async function exportAutoOk(){
       }catch(e){}
     }, 2000);
   }catch(e){ msg("导出失败：" + (e.message||e)); }
-}
-async function writeAuto(){
-  try{
-    const r = await jsonPost("/api/write-auto", {});
-    msg(`补写入完成：写入 ${r.written}，跳过 ${r.skipped}${r.failed ? "，失败 " + r.failed : ""}`);
-    await loadStats(); await loadQueue();
-  }catch(e){ msg("补写入失败：" + (e.message||e)); }
 }
 
 // ---------------- 风控设置 / 目录设置（设置页的两个弹窗） ----------------
@@ -1453,6 +1462,7 @@ async function loadConfig(){
     $("music_dir").value = c.music_dir || "";
     $("recursive").checked = c.recursive === "1";
     $("write_enabled").checked = c.write_enabled === "1";
+    writeEnabled = c.write_enabled === "1";
     // 风控设置（弹窗内）
     $("min_interval").value = c.min_interval || "0.3";
     $("concurrency").value = c.concurrency || "1";
