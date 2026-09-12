@@ -2,6 +2,50 @@
 
 本项目所有值得记录的变更都会列在此文件。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
+## [1.4.1] - 2026-09-12
+
+**写入标签的键名统一按「飞牛音乐真正读取的键」对齐（含歌词在内的所有字段）。**
+
+### 修复
+- **FLAC / OGG 的年份不再丢**：飞牛音乐服务端读 FLAC / OGG 的年份**只认 `YEAR` 键、且必须是纯数字**，
+  完全不看 `date`。此前只写 `date=2024-05-06`，所以飞牛音乐里这些歌的年份是空的；
+  现在写出会同时写 `date`（完整日期，别的播放器用）和 `YEAR=2024`（服务端读的那份）。
+  真机对照实验：同一个文件只改这一处 —— 只写 `date` 时服务端返回 `year:null`，
+  写 `year=2019` 时返回 `year:2019`。
+  MP3 不受影响（服务端能读 `TDRC` 里的完整日期，实测 9/9 都能读到年份），保持原样。
+
+### 变更
+- **FLAC / OGG 的歌词改为写 `LYRICS` + `UNSYNCEDLYRICS`**：以前写小写 `lyrics`。
+  写入前会先清掉旧写法（小写 `lyrics`、`UNSYNCED LYRICS` 等），避免同一字段留两份。
+  `LYRICS` 是飞牛音乐与绝大多数播放器认的写法，`UNSYNCEDLYRICS` 给只认它的播放器兜底
+  （飞牛音乐不读这个键，但它无害）。**注意**：Vorbis 的注释键大小写不敏感，`lyrics` 与
+  `LYRICS` 是同一个字段，不能同时写。
+- **读取兼容**：`read_lyrics` / `read_tags` 同时认 `LYRICS`、`lyrics`、`UNSYNCEDLYRICS`
+  ——别的工具只写 `UNSYNCEDLYRICS` 的文件也能读到歌词。
+- **其它字段的键名逐一核对过**，本来就与飞牛音乐的读法一致，无需改动：
+  FLAC/OGG 用 `title` `artist` `album` `albumartist` `YEAR`+`date` `genre` `tracknumber`
+  `tracktotal` `discnumber`；MP3 用 `TIT2` `TPE1` `TALB` `TPE2` `TDRC` `TCON` `TRCK`（`3/12`）
+  `TPOS`；封面用 FLAC 图片块 / MP3 的 `APIC` / OGG 的 `METADATA_BLOCK_PICTURE`；
+  歌词 MP3 仍写 `USLT`。写出的 `publisher`（`TPUB`）、`language`（`TLAN`）飞牛音乐不读，
+  保留是给其它播放器用的，不影响它。
+
+### 新增
+- **标签键名对齐回归测试** `app/server/tests/test_tag_keys.py`：把「应用写出的键」与
+  「飞牛音乐实际读取的键」逐项比对（25 项断言，覆盖 flac / ogg / mp3 的元数据、年份、
+  歌词、封面与重复写入），键名大小写用文件原始字节复核（`mutagen` 读 Vorbis 会把键显示成小写，
+  不能作为大小写的证据）。
+
+### 说明
+- **已经写过的老文件不回炉**：歌词小写 `lyrics` 飞牛音乐照样读；年份只影响「库里已有 FLAC 的
+  年份显示」，重新刮一遍（或手动写一次字段）就会补上 `YEAR`。
+- 判定依据：飞牛音乐服务端（本机 `trim.music` 的 `trim-music`）读标签用的是
+  `github.com/dhowden/tag`（FLAC/OGG 的 `vorbis.go` 读 `lyrics`，MP3 的 `id3v2metadata.go`
+  读 `USLT`；二进制里能看到 `dhowden/tag.ReadFLACTags`、`ReadID3v2Tags` 等符号），
+  年份与总曲目数等项目另有真机对照实验逐项确认（见交接笔记第 8 节）。
+  另外抽样核对了音乐库 239 个真实文件的标签键分布，**库里现有写法很杂**
+  （`lyrics` 119 个 / `unsyncedlyrics` 43 个 / `TXXX:ALBUM ARTIST` 83 个 …），
+  所以以「服务端读什么」为准，别照抄库里的写法。
+
 ## [1.4.0] - 2026-09-12
 
 **1.4 里程碑：处理记录（永久记忆）覆盖「已人工 / 错误 / 跳过」三种标签，手机端导出走飞牛原生下载通道。**
