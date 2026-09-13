@@ -71,7 +71,7 @@ def _year_only(date: str) -> str:
 #: 而且本应用的字段开关里也没有它，同样不写。
 READ_BY_FEINIU = {
     "title", "artist", "album", "album_artist",
-    "YEAR", "genre", "track", "track_total", "disc", "lyrics", "cover",
+    "year", "genre", "track", "track_total", "disc", "lyrics", "cover",
 }
 
 #: 兜底告警：万一以后有人加了新字段却忘了确认「飞牛音乐读不读」，动静要看得见
@@ -136,7 +136,7 @@ def _vorbis_fields(meta: SongMeta) -> Dict[str, str]:
         fields["album"] = meta.album
     if meta.album_artist and _guard("album_artist"):
         fields["albumartist"] = meta.album_artist
-    if meta.date and _guard("YEAR"):
+    if meta.date and _guard("year"):
         fields["date"] = meta.date
         year = _year_only(meta.date)
         if year:
@@ -182,7 +182,7 @@ def _write_id3(audio, meta: SongMeta) -> None:
         tags.add(TALB(encoding=enc, text=[meta.album]))
     if meta.album_artist and _guard("album_artist"):
         tags.add(TPE2(encoding=enc, text=[meta.album_artist]))
-    if meta.date and _guard("YEAR"):
+    if meta.date and _guard("year"):
         tags.add(TDRC(encoding=enc, text=[meta.date]))
     if meta.genre and _guard("genre"):
         tags.add(TCON(encoding=enc, text=[meta.genre]))
@@ -213,7 +213,7 @@ def _write_ape(audio, meta: SongMeta) -> None:
         tags["Album"] = meta.album
     if meta.album_artist and _guard("album_artist"):
         tags["Album Artist"] = meta.album_artist
-    if meta.date and _guard("YEAR"):
+    if meta.date and _guard("year"):
         tags["Date"] = meta.date
     if meta.genre and _guard("genre"):
         tags["Genre"] = meta.genre

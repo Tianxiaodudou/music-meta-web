@@ -233,6 +233,28 @@ def main():
     ks2 = lower_set(raw_vorbis_keys(empty))
     check("一个字段都没勾时什么都不写", not (ks2 - {"encoder"}), sorted(ks2))
 
+    # 关卡键名必须与「字段名」一致（曾经把 YEAR/ year 写错，导致年份绕过字段开关）
+    from musicmeta.fields import WRITABLE_FIELDS
+    from musicmeta.writer import READ_BY_FEINIU
+    check("可写字段清单与写入器清单完全一致",
+          set(WRITABLE_FIELDS) == set(READ_BY_FEINIU),
+          sorted(set(WRITABLE_FIELDS) ^ set(READ_BY_FEINIU)))
+
+    # 只勾「歌名」时，年份（写的是 YEAR 键）也必须被拦住
+    noyear = os.path.join(tmp, "noyear.flac")
+    silence(noyear)
+    with active_fields_scope({"title"}):
+        write_metadata(noyear, make_meta())
+    ksy = lower_set(raw_vorbis_keys(noyear))
+    check("没勾年份就不写年份（YEAR/date 都不写）",
+          not (kyy := (ksy & {"year", "date"})), sorted(kyy))
+    check("没勾年份时 title 仍然写了", "title" in ksy)
+    # 勾上「年份」时应当写
+    with active_fields_scope({"title", "year"}):
+        write_metadata(noyear, make_meta())
+    ksy2 = lower_set(raw_vorbis_keys(noyear))
+    check("勾了年份就写年份", ("year" in ksy2) and ("date" in ksy2), sorted(ksy2))
+
     # 不在作用域里（调用方已过滤）→ 按老行为写，不受影响
     free = os.path.join(tmp, "free.flac")
     silence(free)
