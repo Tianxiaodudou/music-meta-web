@@ -380,6 +380,9 @@ def _write_fields(path: str, meta: SongMeta, src, cfg: dict) -> list:
 
     写入保护：候选里为空的字段绝不写入 —— 即使该字段生效，只要候选值
     为空（或纯空白），就跳过，文件里原本已有的数据不会被覆盖成"无"。
+
+    「生效字段」在这里过滤一遍，同时用 writer.active_fields_scope 把它交给
+    写入器再拦一道（写入器是最后出口，避免其它调用路径绕过字段开关）。
     """
     written: list = []
     active = set(active_field_keys(cfg))
@@ -388,8 +391,7 @@ def _write_fields(path: str, meta: SongMeta, src, cfg: dict) -> list:
     for key, attr in (("title", "title"), ("artist", "artist"),
                       ("album", "album"), ("album_artist", "album_artist"),
                       ("year", "date"), ("genre", "genre"),
-                      ("track", "track"), ("disc", "disc"),
-                      ("publisher", "publisher"), ("language", "language")):
+                      ("track", "track"), ("disc", "disc")):
         value = getattr(meta, attr, "")
         if key in active and has(value):
             setattr(partial, attr, str(value).strip())
@@ -405,14 +407,15 @@ def _write_fields(path: str, meta: SongMeta, src, cfg: dict) -> list:
                 partial.track = ""
     if partial.title or partial.artist or partial.date or partial.album \
             or partial.album_artist or partial.genre or partial.track \
-            or partial.disc or partial.publisher or partial.language:
-        writer.write_metadata(path, partial)
+            or partial.disc:
+        # 写入器也认「生效字段」：作用域内只有勾选的字段能被写
+        with writer.active_fields_scope(active):
+            writer.write_metadata(path, partial)
         for k, v in (("title", partial.title), ("artist", partial.artist),
                      ("year", partial.date), ("album", partial.album),
                      ("album_artist", partial.album_artist),
                      ("genre", partial.genre), ("track", partial.track),
-                     ("disc", partial.disc), ("company", partial.publisher),
-                     ("language", partial.language),
+                     ("disc", partial.disc),
                      ("track_total", partial.track_total)):
             if v:
                 written.append(k)
@@ -450,7 +453,8 @@ def _write_fields(path: str, meta: SongMeta, src, cfg: dict) -> list:
             if _qq and _qm:
                 lrc = lyrics_cached(_qq, _qm.song_id)
         if lrc:
-            writer.write_lyrics(path, lrc)
+            with writer.active_fields_scope(active):
+                writer.write_lyrics(path, lrc)
             written.append("lyrics")
     _restore_owner(path)
     return written

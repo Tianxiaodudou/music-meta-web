@@ -32,6 +32,7 @@
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 from typing import Dict, Optional
 
 from .sources.base import SongMeta
@@ -76,15 +77,48 @@ READ_BY_FEINIU = {
 #: 兜底告警：万一以后有人加了新字段却忘了确认「飞牛音乐读不读」，动静要看得见
 _UNCHECKED_WRITE_FIELDS: set = set()
 
+#: 「生效字段」闸门（设置页里勾选的那份）。
+#: None = 由调用方保证已按生效字段挑过（历史行为）；
+#: 给一个集合 = 写入器自己再拦一道：不在集合里的字段一律不写。
+#: 这样「字段开关」不只在上游生效，写入器这个最后出口也认它。
+_active_allowed: Optional[set] = None
+
+
+@contextmanager
+def active_fields_scope(keys):
+    """把「生效字段」交给写入器把关：作用域内只有这些字段能被写进文件。
+
+    用法（调度器/手动写入都用它包住写文件那一段）：
+        with active_fields_scope(active_field_keys(cfg)):
+            write_metadata(path, meta)
+    """
+    global _active_allowed
+    prev = _active_allowed
+    _active_allowed = None if keys is None else {str(k).strip() for k in keys}
+    try:
+        yield
+    finally:
+        _active_allowed = prev
+
 
 def _guard(key: str) -> bool:
-    """写入前的最后一道闸：不在 READ_BY_FEINIU 清单里的字段直接丢弃（并留一行日志）。"""
-    if key in READ_BY_FEINIU:
-        return True
-    if key not in _UNCHECKED_WRITE_FIELDS:
-        _UNCHECKED_WRITE_FIELDS.add(key)
-        print(f"[writer] 跳过字段 {key!r}：飞牛音乐不读这个标签，按约定不写")
-    return False
+    """写入前的最后一道闸，两道规则缺一不可：
+
+    1. **飞牛音乐读得到**（`READ_BY_FEINIU`）——它不读的标签写了也是白写；
+    2. **用户勾选了「生效字段」**（`active_fields_scope`）——没勾的字段不该写；
+       未进作用域（_active_allowed 为 None）时按调用方已过滤处理，只查第 1 条。
+    """
+    if key not in READ_BY_FEINIU:
+        if key not in _UNCHECKED_WRITE_FIELDS:
+            _UNCHECKED_WRITE_FIELDS.add(key)
+            print(f"[writer] 跳过字段 {key!r}：飞牛音乐不读这个标签，按约定不写")
+        return False
+    if _active_allowed is not None and key not in _active_allowed:
+        if ("off:" + key) not in _UNCHECKED_WRITE_FIELDS:
+            _UNCHECKED_WRITE_FIELDS.add("off:" + key)
+            print(f"[writer] 跳过字段 {key!r}：设置里没有勾选这个生效字段")
+        return False
+    return True
 
 
 def _vorbis_fields(meta: SongMeta) -> Dict[str, str]:
@@ -220,7 +254,15 @@ def _image_mime(data: bytes) -> str:
 
 
 def write_cover(path: str, image_bytes: bytes) -> None:
-    """把封面图写入音频文件（各格式对应标准字段）。"""
+    """把封面图写入音频文件（各格式对应标准字段）。
+
+    封面同样没有「字段名 = 标签键」的对应关系，显式过一遍生效字段闸门：
+    设置里没勾「封面图」就不写。
+    """
+    if not image_bytes:
+        return
+    if not _guard("cover"):
+        return
     ext = os.path.splitext(path)[1].lower()
     mime = _image_mime(image_bytes)
     if ext == ".flac":
@@ -296,8 +338,14 @@ def _write_vorbis_lyrics(tags, lrc: str) -> None:
 
 
 def write_lyrics(path: str, lrc: str) -> None:
-    """把 LRC 歌词写入音频文件。"""
+    """把 LRC 歌词写入音频文件。
+
+    歌词没有同名标签键（Vorbis 用 LYRICS、MP3 用 USLT），所以这里**显式**过一遍
+    生效字段闸门：设置里没勾「歌词」就不写。
+    """
     if not lrc:
+        return
+    if not _guard("lyrics"):
         return
     ext = os.path.splitext(path)[1].lower()
     if ext == ".mp3":

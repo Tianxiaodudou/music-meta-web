@@ -200,6 +200,45 @@ def main():
           f"{t.get('track')}/{t.get('track_total')}")
     check("MP3 歌词 USLT 回读一致", read_lyrics(mp3) == LRC)
 
+
+    print("【7】生效字段闸门：没勾选的字段不许写（写入器把最后一道关）")
+    scoped = os.path.join(tmp, "scoped.flac")
+    silence(scoped)
+    from musicmeta.writer import active_fields_scope
+    # 只勾「歌名」：其余字段（歌手/专辑/年份/流派/曲目号/碟号）都不该落盘
+    only_title = SongMeta()
+    only_title.title = "只勾了歌名"
+    only_title.artist = "不该出现的歌手"
+    only_title.album = "不该出现的专辑"
+    only_title.date = "2011-11-11"
+    only_title.genre = "不该出现的流派"
+    only_title.track = "9"
+    only_title.disc = "2"
+    with active_fields_scope({"title"}):
+        write_metadata(scoped, only_title)
+        write_lyrics(scoped, LRC)
+    ks = lower_set(raw_vorbis_keys(scoped))
+    check("勾选的字段写进去了（title）", "title" in ks, sorted(ks))
+    check("没勾选的字段一个都没写", not (ks & {"artist", "album", "date", "year",
+                                            "genre", "tracknumber", "discnumber"}),
+          sorted(ks))
+    check("没勾歌词就不写歌词", "lyrics" not in ks, sorted(k for k in ks if "lyric" in k))
+
+    # 空集合（什么都没勾）→ 一个字都不写
+    empty = os.path.join(tmp, "empty.flac")
+    silence(empty)
+    with active_fields_scope(set()):
+        write_metadata(empty, make_meta())
+        write_lyrics(empty, LRC)
+    ks2 = lower_set(raw_vorbis_keys(empty))
+    check("一个字段都没勾时什么都不写", not (ks2 - {"encoder"}), sorted(ks2))
+
+    # 不在作用域里（调用方已过滤）→ 按老行为写，不受影响
+    free = os.path.join(tmp, "free.flac")
+    silence(free)
+    write_metadata(free, make_meta())
+    check("未进作用域时不受影响", "title" in lower_set(raw_vorbis_keys(free)))
+
     print("【5】封面：各格式写服务端认的字段")
     png = os.path.join(REPO, "ICON.PNG")
     data = open(png, "rb").read()

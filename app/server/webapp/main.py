@@ -1228,18 +1228,22 @@ def field_write(body: FieldWriteBody):
         raise HTTPException(400, f"字段「{FIELD_MAP[field].label}」未生效，"
                                  f"请到设置里勾选后再写入")
 
+    # 写入器也认「生效字段」（最后一道闸）：作用域内只有勾选的字段写得进去
+    scope = _w.active_fields_scope(active_fields(cfg))
     if field == "cover":
         if value:
             data = scheduler._download_cover(value)
             if not data:
                 raise HTTPException(400, "封面下载失败（URL 不可访问或非图片）")
             try:
-                _w.write_cover(path, data)
+                with scope:
+                    _w.write_cover(path, data)
             except OSError as exc:
                 raise HTTPException(500, scheduler._cn_err(exc))
     elif field == "lyrics":
         try:
-            _w.write_lyrics(path, body.value)  # 保留换行，不用 strip
+            with scope:
+                _w.write_lyrics(path, body.value)  # 保留换行，不用 strip
         except OSError as exc:
             raise HTTPException(500, scheduler._cn_err(exc))
     elif field in _FIELD_ATTR:
@@ -1254,7 +1258,8 @@ def field_write(body: FieldWriteBody):
             if cur_track:
                 meta.track = cur_track
         try:
-            _w.write_metadata(path, meta)
+            with scope:
+                _w.write_metadata(path, meta)
         except OSError as exc:
             raise HTTPException(500, scheduler._cn_err(exc))
     else:
