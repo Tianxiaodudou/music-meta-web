@@ -2,6 +2,33 @@
 
 本项目所有值得记录的变更都会列在此文件。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
+## [1.4.8] - 2026-09-17
+
+### 变更
+- **依赖随安装包内置**：运行期依赖以 wheel 形式直接打进 fpk，安装后立即可用 —— 不再在安装或首次启动时联网下载依赖。以前依赖是在线安装的（`pip install -i 国内镜像`），网络不通、镜像抽风、DNS 抖动都会导致「装上了但起不来」。
+- **离线安装是首选路径，且是断网的**：`cmd/main` 改用 `pip install --no-index --find-links <包内轮子>` 安装，`--no-index` 是显式断网开关，不会偷偷回落到网络索引；只有在内置轮子缺失、或与当前解释器 ABI 不匹配时，才降级走镜像源兜底（正常不会发生，日志会明确标注「联网兜底」）。
+- **一个安装包同时支持 x86_64 与 ARM（aarch64）**：包内同时集成两种架构的依赖轮子（纯 Python 的轮子共用一份，编译扩展 `pydantic_core` 两种各一份），pip 在目标机按当前架构自动挑选，用户不需要区分架构。
+- **打包只在 GitHub 上进行**：本地不再打包、也不在本地下载依赖包。推 tag 后由 GitHub Actions 拉取轮子、验证、注入更新说明、用官方 fnpack 打包并发布 Release。
+
+### 修复
+- **Release 里的 fpk 一直没有 `changelog` 字段**，应用中心的「更新说明」是空的。该字段原先只由本地打包脚本注入，而 CI 是直接 `fnpack build`，两边产物并不一致（1.4.7 的 Release 资产 359411 B，本地存档 359774 B，注释里写的「确保本地 = GitHub」实际没成立）。现在注入逻辑已搬进 CI，并在打包后回读成品、确认字段真的写进了包内 manifest。
+- **更新说明不再被腰斩**：原逻辑只取每条日志的第一行，而 CHANGELOG 里的条目普遍折行，导致应用中心显示的是「……里写的是文件标签键」这种半句话。现在续行会折进同一条，整条放不下就整条不要，不在句子中间截断。
+
+### 新增
+- `app/server/requirements.lock.txt`：依赖精确锁定文件（版本取自线上实际跑通的那一套）。CI 按它拉轮子、也按它做离线安装，保证「包里的轮子」与「要装的版本」永远同一份清单；改版本时改这一处，CI 会重新拉取并验证。
+- `scripts/vendor-wheels.sh`：在 CI 内按 cp311 拉取 x86_64 + aarch64 的依赖轮子。注意是**按架构分两次**拉取 —— `pip download` 一次给多个 `--platform` 时，对每个依赖只挑一个满足条件的轮子，同一个包的另一个架构变体不会被下载（实测），只写两个 `--platform` 并不会让两种架构都进包。
+- `scripts/verify-wheel-set.py`：逐个依赖 × 逐个架构做可满足性判定，并核对编译扩展的 ELF 机器类型。**这一步是必要的**——`pip download --platform A --platform B` 只要任意一个平台能满足就会下载成功，所以「某依赖只有 x86_64 轮子」这种情况 pip 自己不会报错，会在 ARM 机器上才炸；这个脚本把它拦在 CI 里。
+- `scripts/verify-offline-install.sh`：CI 内真建 venv、`--no-index` 离线装一遍、import，并用这套内置依赖跑应用自身的测试；再用 `--target` 解包 ARM 轮子核对 ELF 架构。
+- `scripts/verify-fpk-payload.sh`：成品核对 —— 回读 fpk，确认依赖确实在包内、双架构轮子齐备、`version`/`changelog`/`platform` 字段正确、`manifest.checksum` 与 `app.tgz` 的 md5 相符。
+- `scripts/inject-changelog.py`：把更新说明注入 manifest（从本地打包脚本迁移过来，并修掉腰斩问题）。
+- `scripts/tests/test_wheel_verify.py`：用合成轮子自检上面的校验逻辑（缺 aarch64 轮子、ELF 架构标错、混入源码包等情形都必须被拦住），全部离线、不下载任何依赖包。
+- `scripts/tests/test_vendor_wheels_offline.py`：用本地伪造的「索引」把拉轮子脚本整条流程跑通，并把「两种架构的编译轮子都必须落到输出目录」「缺 aarch64 时必须失败」钉成回归测试 —— 上面那个 `pip download` 的坑如果被改回去，这里会直接红。
+
+### 说明
+- 依赖版本没有变化，仍是在线上跑通的那一套（fastapi 0.141.1 / pydantic 2.13.5 / uvicorn 0.52.4 / mutagen 1.48.1 / python-multipart 0.0.32 等 15 个包）。
+- 编译扩展只有 `pydantic_core` 一个，已核对 PyPI 同时提供 `cp311-manylinux_2_17_x86_64` 与 `cp311-manylinux_2_17_aarch64` 轮子。
+- 依赖没装好时应用不再「硬启动」：`cmd/main` 会在日志里留下失败原因并拒绝启动，避免出现「已启动但立刻退出」这种看不出原因的假象。
+
 ## [1.4.7] - 2026-09-12
 
 ### 修复

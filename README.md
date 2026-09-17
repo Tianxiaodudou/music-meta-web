@@ -32,6 +32,29 @@ fnOS 原生应用，为本地音乐库批量补齐元数据的专业工具。支
 
 各版本变更见 [CHANGELOG.md](CHANGELOG.md)；每个 GitHub Release 也附有对应版本的更新日志。
 
+## 构建与发布
+
+**打包只在 GitHub 上进行**：本地不打包、也不在本地下载依赖包。流程是推一个与 `manifest` 中 `version` 一致的 tag（如 `v1.4.8`），由 [GitHub Actions](.github/workflows/build-release.yml) 完成全部工作：
+
+1. 按 `app/server/requirements.lock.txt` 拉取运行期依赖的 wheel（cp311，x86_64 与 aarch64 两种架构）；
+2. 校验轮子集合 —— 逐个依赖 × 逐个架构判定可满足性，并核对编译扩展的 ELF 架构；
+3. 建 venv、`--no-index` 离线装一遍、import，并用这套内置依赖跑应用自身的测试；
+4. 把 `CHANGELOG` 当前版本段落注入 `manifest.changelog`（应用中心的更新说明）；
+5. 用官方 `fnpack` 打包，然后**回读成品**确认依赖真的在包内、双架构齐备、字段正确；
+6. 发布 Release（正文自动取自 `CHANGELOG.md`）。
+
+### 依赖内置的机制
+
+运行期依赖以 wheel 形式打进 fpk（`app/server/vendor/wheels/`，该目录由 CI 生成、不入版本库）。客户端 `cmd/main` 启动时用
+
+```
+pip install --no-index --find-links <包内轮子> -r requirements.lock.txt
+```
+
+安装 —— `--no-index` 是显式断网开关，不会回落到网络索引，所以**安装后立即可用，不受网络状况影响**。同一个 fpk 同时内置 x86_64 与 aarch64 的轮子（纯 Python 包共用一份，编译扩展 `pydantic_core` 两种各一份），pip 在目标机按当前架构自动挑选，因此一个安装包通吃两种架构。
+
+改依赖版本只需改 `app/server/requirements.lock.txt`：CI 会重新拉轮子并重新验证；若某个架构没有对应轮子，CI 会直接失败而不会带病发布。
+
 ## 许可
 
 GPL-3.0 License — 见 [LICENSE](LICENSE)。

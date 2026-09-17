@@ -1,0 +1,35 @@
+# music-meta-web 飞牛应用依赖（精确锁定）
+# ------------------------------------------------------------
+# 这个文件是「随包内置的依赖轮子」的唯一来源，必须与
+# app/server/requirements.txt 的语义保持一致，但版本写死。
+#
+# 为什么单独一个 lock 文件：
+#   1) requirements.txt 用 >= 是给人看的范围；真正参与
+#      「CI 下载轮子」和「客户端离线安装」的必须是同一份确定性清单，
+#      否则会出现「包里的轮子」和「要装的版本」对不上；
+#   2) 版本取自线上实际跑通的那一套（fnOS python311 / Python 3.11.5），
+#      即 `pip list` 的真实结果，不是推演出来的；
+#   3) 改版本时：改这里 → CI 会重新拉轮子并做离线安装验证，
+#      轮子拉不到（例如某架构没有对应 wheel）CI 直接失败，不会带病发布。
+#
+# 架构覆盖说明：
+#   除 pydantic_core 外全部是 py3-none-any 纯 Python 轮子（与架构无关）；
+#   pydantic_core 是 Rust 扩展，需要 cp311 的 x86_64 / aarch64 两种 manylinux 轮子，
+#   CI 会把两种架构的轮子一并打进同一个 fpk，pip 在目标机按当前架构自动挑。
+#   （已核对 PyPI：pydantic_core 2.46.5 同时提供
+#     cp311-manylinux_2_17_x86_64 与 cp311-manylinux_2_17_aarch64 轮子）
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.14.2
+click==8.5.0
+fastapi==0.141.1
+h11==0.16.0
+idna==3.19
+mutagen==1.48.1
+pydantic==2.13.5
+pydantic_core==2.46.5
+python-multipart==0.0.32
+starlette==1.6.0
+typing_extensions==4.16.0
+typing-inspection==0.4.4
+uvicorn==0.52.4

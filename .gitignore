@@ -25,3 +25,8 @@ venv/
 
 # fnpack 临时构建目录
 .tmp/
+
+# CI 构建期下载并打进 fpk 的运行期依赖轮子
+# 只在 GitHub Actions 里生成（scripts/vendor-wheels.sh），不进版本库：
+# 这样本地既不需要打包、也不需要下载任何依赖包。
+app/server/vendor/

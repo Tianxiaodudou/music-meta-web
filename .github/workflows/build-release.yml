@@ -3,6 +3,10 @@ name: Build & Release fpk
 # 触发方式：
 #   1) 推送形如 v1.2.1 的 git tag（推荐，tag 名必须与 manifest 中 version 一致，去掉 v）
 #   2) 手动 workflow_dispatch（可选，用输入版本号打 Release）
+#
+# 本仓库规则：**打包只在 GitHub 上进行**。本地不再打包、也不在本地下载依赖包。
+# 运行期依赖（wheel）由本工作流下载并打进 fpk，安装后立即可用、全程不联网，
+# 且同一个 fpk 同时支持 x86_64 与 aarch64 两种架构。
 on:
   push:
     tags:
@@ -23,6 +27,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # 依赖轮子按 cp311 拉取，离线安装验证也需要一个 3.11 解释器
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
       - name: Download official fnpack
         run: |
@@ -54,10 +64,39 @@ jobs:
             exit 1
           fi
 
+      # ---- 依赖内置：把两种架构的 wheel 拉到 app/server/vendor/wheels/ ----
+      # 先自检打包工具链本身（合成数据、完全离线），再动真格的。
+      - name: Test packaging scripts (offline, synthetic fixtures)
+        run: |
+          python3 scripts/tests/test_wheel_verify.py
+          python3 scripts/tests/test_vendor_wheels_offline.py
+
+      # 同时校验「每个依赖在 x86_64 与 aarch64 上都有可用轮子」以及编译扩展的
+      # ELF 架构是否与平台标签一致；缺一条腿就在这里失败，不会带病发布。
+      - name: Vendor runtime wheels (x86_64 + aarch64)
+        run: bash scripts/vendor-wheels.sh
+
+      # 真装一遍：建 venv + --no-index 离线安装 + import + 跑应用自身测试，
+      # 再用 --target 解包 ARM 轮子核对 ELF。客户端那条路径在这里被提前走通。
+      - name: Verify offline install really works
+        run: bash scripts/verify-offline-install.sh
+
+      # 应用中心的「更新说明」来自 manifest.changelog。
+      # 这段逻辑原先只存在于本地打包脚本里，而打包已全部搬到 CI，所以必须在这里注入。
+      - name: Inject manifest.changelog from CHANGELOG
+        run: |
+          python3 scripts/inject-changelog.py manifest CHANGELOG.md "${{ steps.version.outputs.version }}"
+
       - name: Build fpk
         run: |
           fnpack build --directory "$PWD"
           ls -la music-meta-web.fpk
+
+      # 只信成品：回读 fpk，确认依赖真在包里、双架构轮子齐备、字段正确
+      - name: Verify fpk payload (deps bundled + both arches + manifest fields)
+        run: |
+          bash scripts/verify-fpk-payload.sh music-meta-web.fpk \
+            "${{ steps.version.outputs.version }}" app/server/vendor/wheels
 
       - name: Rename fpk with app name and version
         run: |
@@ -88,6 +127,12 @@ jobs:
             echo ""
             echo "### 安装"
             echo "下载本 Release 的 \`music-meta-web-${VER}.fpk\`，在飞牛 fnOS 应用中心 →「手动安装」中选择该文件即可。"
+            echo ""
+            echo "### 本版说明"
+            echo "- **依赖已随包内置**：运行期依赖以 wheel 形式打进 fpk，安装后立即可用，"
+            echo "  不需要在安装或首次启动时联网下载依赖（此前依赖在线安装，网络不通就会失败）。"
+            echo "- **同一个包支持两种架构**：fpk 内同时内置 x86_64 与 aarch64 的依赖轮子，"
+            echo "  x86 与 ARM 机器都装这一个文件，无需区分。"
             echo ""
             echo "### 更新日志"
             echo ""

@@ -17,6 +17,11 @@ fi
 
 VENV_DIR="${VAR_DIR}/venv"
 REQ_FILE="${DEST_DIR}/server/requirements.txt"
+# 依赖轮子随 fpk 内置（CI 打包时下载，见 scripts/vendor-wheels.sh），
+# 正常路径下装完即用、全程不联网。
+WHEELS_DIR="${DEST_DIR}/server/vendor/wheels"
+LOCK_FILE="${DEST_DIR}/server/requirements.lock.txt"
+DEPS_CHECK="import fastapi, uvicorn, mutagen, multipart"
 
 log_msg() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "${LOG_FILE}"
@@ -31,30 +36,69 @@ run_as_user() {
     fi
 }
 
+deps_ok() {
+    run_as_user "${VENV_DIR}/bin/python" -c "${DEPS_CHECK}" 2>/dev/null
+}
+
+install_deps_offline() {
+    # 只用包内轮子：--no-index 是显式断网开关，绝不会偷偷回落到网络索引。
+    if [ ! -d "${WHEELS_DIR}" ]; then
+        log_msg "内置轮子目录不存在：${WHEELS_DIR}"
+        return 1
+    fi
+    local count
+    count="$(find "${WHEELS_DIR}" -maxdepth 1 -name '*.whl' 2>/dev/null | wc -l)"
+    if [ "${count}" -eq 0 ]; then
+        log_msg "内置轮子目录为空：${WHEELS_DIR}"
+        return 1
+    fi
+    local spec="${REQ_FILE}"
+    [ -f "${LOCK_FILE}" ] && spec="${LOCK_FILE}"
+    log_msg "离线安装依赖：${count} 个内置轮子（$(basename "${spec}")）"
+    run_as_user env PIP_DISABLE_PIP_VERSION_CHECK=1 \
+        "${VENV_DIR}/bin/python" -m pip install \
+        --no-index --find-links "${WHEELS_DIR}" --no-cache-dir \
+        --disable-pip-version-check -r "${spec}" >> "${LOG_FILE}" 2>&1
+}
+
+install_deps_online() {
+    # 最后兜底：仅当内置轮子缺失、或与当前 Python ABI 不匹配（如换了大版本解释器）时才走网络
+    for MIRROR in \
+        "https://mirrors.cloud.tencent.com/pypi/simple" \
+        "https://repo.huaweicloud.com/repository/pypi/simple" \
+        "https://pypi.tuna.tsinghua.edu.cn/simple" \
+        "https://mirrors.aliyun.com/pypi/simple"; do
+        log_msg "尝试镜像: ${MIRROR}"
+        if run_as_user env PIP_DISABLE_PIP_VERSION_CHECK=1 \
+            "${VENV_DIR}/bin/python" -m pip install \
+            --timeout 20 --retries 1 --disable-pip-version-check -i "${MIRROR}" -r "${REQ_FILE}"; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 prepare_venv() {
     mkdir -p "${VAR_DIR}"
     if [ ! -x "${VENV_DIR}/bin/python" ]; then
         log_msg "创建 venv: ${VENV_DIR}"
         run_as_user "${PYTHON}" -m venv "${VENV_DIR}"
     fi
-    if ! run_as_user "${VENV_DIR}/bin/python" -c "import fastapi, uvicorn, mutagen, multipart" 2>/dev/null; then
-        log_msg "安装依赖（国内镜像源）..."
-        # 国内环境直接走镜像源链（腾讯→华为→清华→阿里），不先碰默认 PyPI
-        for MIRROR in \
-            "https://mirrors.cloud.tencent.com/pypi/simple" \
-            "https://repo.huaweicloud.com/repository/pypi/simple" \
-            "https://pypi.tuna.tsinghua.edu.cn/simple" \
-            "https://mirrors.aliyun.com/pypi/simple"; do
-            log_msg "尝试镜像: ${MIRROR}"
-            if run_as_user "${VENV_DIR}/bin/pip" install --timeout 20 --retries 1 -i "${MIRROR}" -r "${REQ_FILE}"; then
-                break
-            fi
-        done
-        if ! run_as_user "${VENV_DIR}/bin/python" -c "import fastapi, uvicorn, mutagen, multipart" 2>/dev/null; then
-            log_msg "依赖安装失败"
-            return 1
-        fi
+    if deps_ok; then
+        return 0
     fi
+    # 首选路径：依赖随包内置，离线安装，不依赖网络也不受网络波动影响
+    if install_deps_offline && deps_ok; then
+        log_msg "依赖就绪（离线，来自包内内置轮子）"
+        return 0
+    fi
+    log_msg "⚠ 内置轮子离线安装未成功，降级为联网安装（最后兜底，正常不该走到这里）"
+    if install_deps_online && deps_ok; then
+        log_msg "依赖就绪（联网兜底）"
+        return 0
+    fi
+    log_msg "依赖安装失败"
+    return 1
 }
 
 check_process() {
@@ -82,7 +126,12 @@ start_process() {
     if status; then
         return 0
     fi
-    prepare_venv
+    # 依赖没装好就不要硬启：否则只会得到一个「启动了但立刻退出」的状态，
+    # 日志里看不出真正原因。这里直接失败并把原因留在 info.log。
+    if ! prepare_venv; then
+        log_msg "依赖未就绪，放弃启动（详见上方依赖安装日志）"
+        return 1
+    fi
     log_msg "启动应用 (socket=${SOCK_FILE}) ..."
     # 安装向导值（wizard/install、wizard/config）→ 同名环境变量 → 转发给 run_server：
     # 音乐目录（必填）、插件目录（必填）、AcoustID Key（可选，可留空）
