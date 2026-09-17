@@ -18,7 +18,7 @@
 - `app/server/requirements.lock.txt`：依赖精确锁定文件（版本取自线上实际跑通的那一套）。CI 按它拉轮子、也按它做离线安装，保证「包里的轮子」与「要装的版本」永远同一份清单；改版本时改这一处，CI 会重新拉取并验证。
 - `scripts/vendor-wheels.sh`：在 CI 内按 cp311 拉取 x86_64 + aarch64 的依赖轮子。注意是**按架构分两次**拉取 —— `pip download` 一次给多个 `--platform` 时，对每个依赖只挑一个满足条件的轮子，同一个包的另一个架构变体不会被下载（实测），只写两个 `--platform` 并不会让两种架构都进包。
 - `scripts/verify-wheel-set.py`：逐个依赖 × 逐个架构做可满足性判定，并核对编译扩展的 ELF 机器类型。**这一步是必要的**——`pip download --platform A --platform B` 只要任意一个平台能满足就会下载成功，所以「某依赖只有 x86_64 轮子」这种情况 pip 自己不会报错，会在 ARM 机器上才炸；这个脚本把它拦在 CI 里。
-- `scripts/verify-offline-install.sh`：CI 内真建 venv、`--no-index` 离线装一遍、import，并用这套内置依赖跑应用自身的测试；再用 `--target` 解包 ARM 轮子核对 ELF 架构。
+- `scripts/verify-offline-install.sh`：CI 内真建 venv、`--no-index` 离线装一遍、import，并用这套内置依赖跑应用自身的测试；再用 `--target` 解包 ARM 轮子核对 ELF 架构。校验拆成 `install` / `apptests` / `arm` 三段，CI 里也是三个独立步骤 —— 失败时**看步骤名就能定位**（CI 日志要仓库管理员权限，读不到，这是唯一拿得到的线索）。应用自身的测试需要用 ffmpeg 造样本音频，CI 里显式 `apt-get install ffmpeg`，缺了会明确报错而不是悄悄跳过。
 - `scripts/verify-fpk-payload.sh`：成品核对 —— 回读 fpk，确认依赖确实在包内、双架构轮子齐备、`version`/`changelog`/`platform` 字段正确、`manifest.checksum` 与 `app.tgz` 的 md5 相符。
 - `scripts/inject-changelog.py`：把更新说明注入 manifest（从本地打包脚本迁移过来，并修掉腰斩问题）。
 - `scripts/tests/test_wheel_verify.py`：用合成轮子自检上面的校验逻辑（缺 aarch64 轮子、ELF 架构标错、混入源码包等情形都必须被拦住），全部离线、不下载任何依赖包。

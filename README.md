@@ -38,7 +38,7 @@ fnOS 原生应用，为本地音乐库批量补齐元数据的专业工具。支
 
 1. 按 `app/server/requirements.lock.txt` 拉取运行期依赖的 wheel（cp311，x86_64 与 aarch64 两种架构）；
 2. 校验轮子集合 —— 逐个依赖 × 逐个架构判定可满足性，并核对编译扩展的 ELF 架构；
-3. 建 venv、`--no-index` 离线装一遍、import，并用这套内置依赖跑应用自身的测试；
+3. 建 venv、`--no-index` 离线装一遍、import，并用这套内置依赖跑应用自身的测试（该测试用 ffmpeg 造样本音频，CI 里显式安装 ffmpeg）；
 4. 把 `CHANGELOG` 当前版本段落注入 `manifest.changelog`（应用中心的更新说明）；
 5. 用官方 `fnpack` 打包，然后**回读成品**确认依赖真的在包内、双架构齐备、字段正确；
 6. 发布 Release（正文自动取自 `CHANGELOG.md`）。

@@ -76,10 +76,29 @@ jobs:
       - name: Vendor runtime wheels (x86_64 + aarch64)
         run: bash scripts/vendor-wheels.sh
 
-      # 真装一遍：建 venv + --no-index 离线安装 + import + 跑应用自身测试，
-      # 再用 --target 解包 ARM 轮子核对 ELF。客户端那条路径在这里被提前走通。
-      - name: Verify offline install really works
-        run: bash scripts/verify-offline-install.sh
+      # 应用自身的测试会用 ffmpeg 造样本音频；镜像里不保证有，显式装上。
+      - name: Install test prerequisites (ffmpeg for sample audio)
+        run: |
+          if command -v ffmpeg >/dev/null 2>&1; then
+            echo "ffmpeg 已存在：$(command -v ffmpeg)"
+          else
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq ffmpeg
+            echo "已安装：$(command -v ffmpeg)"
+          fi
+          ffmpeg -version | head -1
+          command -v ffprobe
+
+      # 真装一遍：建 venv + --no-index 离线安装 + import。
+      # 三口校验拆成三个独立步骤：失败时看步骤名就能定位（CI 日志要管理员权限，读不到）。
+      - name: Verify offline install — x86_64 install & import
+        run: bash scripts/verify-offline-install.sh install
+
+      - name: Verify offline install — run app tests on bundled deps
+        run: bash scripts/verify-offline-install.sh apptests
+
+      - name: Verify offline install — aarch64 wheel set & ELF arch
+        run: bash scripts/verify-offline-install.sh arm
 
       # 应用中心的「更新说明」来自 manifest.changelog。
       # 这段逻辑原先只存在于本地打包脚本里，而打包已全部搬到 CI，所以必须在这里注入。
