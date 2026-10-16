@@ -134,9 +134,9 @@ jobs:
       - name: Rename fpk with app name and version
         run: |
           VER="${{ steps.version.outputs.version }}"
-          mv music-meta-web.fpk "music-meta-web-${VER}.fpk"
-          echo "artifact: music-meta-web-${VER}.fpk"
-          ls -la "music-meta-web-${VER}.fpk"
+          mv music-meta-web.fpk "${VER}-music-meta-web.fpk"
+          echo "artifact: ${VER}-music-meta-web.fpk"
+          ls -la "${VER}-music-meta-web.fpk"
 
       - name: Prepare release body from CHANGELOG
         run: |
@@ -155,17 +155,6 @@ jobs:
           fi
           {
             echo "## music-meta-web v${VER}"
-            echo ""
-            echo "fnOS 原生应用「音乐数据刮削」安装包（GPL-3.0）。由 GitHub Actions 在线使用官方 fnpack 编译并自动发布。"
-            echo ""
-            echo "### 安装"
-            echo "下载本 Release 的 \`music-meta-web-${VER}.fpk\`，在飞牛 fnOS 应用中心 →「手动安装」中选择该文件即可。"
-            echo ""
-            echo "### 本版说明"
-            echo "- **依赖已随包内置**：运行期依赖以 wheel 形式打进 fpk，安装后立即可用，"
-            echo "  不需要在安装或首次启动时联网下载依赖（此前依赖在线安装，网络不通就会失败）。"
-            echo "- **同一个包支持两种架构**：fpk 内同时内置 x86_64 与 aarch64 的依赖轮子，"
-            echo "  x86 与 ARM 机器都装这一个文件，无需区分。"
             echo ""
             echo "### 更新日志"
             echo ""
@@ -196,5 +185,5 @@ jobs:
           tag_name: "v${{ steps.version.outputs.version }}"
           body_path: "${{ runner.temp }}/body.md"
           files: |
-            music-meta-web-${{ steps.version.outputs.version }}.fpk
+            ${{ steps.version.outputs.version }}-music-meta-web.fpk
           fail_on_unmatched_files: true
