@@ -560,8 +560,7 @@
     <div class="faq-q">
       <h4>Q1　报错 ACL 权限问题（音乐目录读不到 / 写不进去）</h4>
       <div class="a">
-        这是<b>飞牛 OS（fnOS）ACL 权限的历史遗留问题</b>：目录本身虽然给了权限，
-        但目录内的部分文件 / 文件夹没有继承到父级权限，因此扫描不到文件、或写入标签时报权限错误。<br>
+        这是<b>飞牛 OS（fnOS）ACL 权限的历史遗留问题</b>：<span style="color:#d32f2f;font-weight:700;border:2px solid #d32f2f;border-radius:6px;padding:2px 8px;background:rgba(211,47,47,.08);display:inline-block">目录本身虽然给了权限， 但目录内的部分文件 / 文件夹没有继承到父级权限</span>，因此扫描不到文件、或写入标签时报权限错误。<br>
         处理办法：打开飞牛「文件管理器」→ 定位到音乐目录 → 右键「属性 / 权限」→ 进入 <b>ACL 配置</b> 窗口 →
         点开 <b>高级选项</b> → 勾选 <b>继承父权限</b> → 保存。然后回到本应用重新点「① 扫描目录」即可。
       </div>
