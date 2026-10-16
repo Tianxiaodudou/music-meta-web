@@ -2,7 +2,7 @@
 """音频指纹识别：Chromaprint(fpcalc) 计算指纹 + AcoustID 服务识别歌曲。
 
 用途：文件名匹配失败/不准确时，用音频内容本身识别真实歌曲
-（歌名/歌手/专辑），再交给 QQ 音乐源回查封面/年份/歌词元数据。
+（歌名/歌手/专辑），再交给支持指纹识别的数据源插件回查封面/年份/歌词元数据。
 
 需要：
 - fpcalc 可执行文件（chromaprint 工具）。**安装包已内置**两套官方静态版本
@@ -107,7 +107,7 @@ def recognize(path: str, api_key: str,
               fpcalc: Optional[str] = FPCALC_DEFAULT) -> List[dict]:
     """一步完成：计算指纹 → AcoustID 识别 → 返回歌曲候选列表。
 
-    数据源插件（qqmusic 的指纹模式）通过 musicmeta.fingerprint 调用它，
+    数据源插件（如 qqmusic 的指纹模式）通过 musicmeta.fingerprint 调用它，
     不要删除。`fpcalc` 留空/用默认值时自动定位（优先用包内置的那份）。
     """
     duration, fp = fingerprint_file(path, fpcalc)

@@ -151,8 +151,10 @@ def get_sources():
     pdir = cfg.get("plugins_dir", "").strip()
     if pdir:
         os.environ["MMW_PLUGINS_DIR"] = pdir
-    from musicmeta.sources.registry import list_sources
-    return {"sources": list_sources(), "plugins_dir": pdir}
+    from musicmeta.sources.registry import fingerprint_sources, list_sources
+    return {"sources": list_sources(),
+            "fingerprint_sources": fingerprint_sources(),
+            "plugins_dir": pdir}
 
 
 @app.get("/api/fields")

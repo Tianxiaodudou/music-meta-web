@@ -74,7 +74,8 @@ DEFAULTS: Dict[str, str] = {
     "source_limit": "10",            # 每个源在候选列表显示的结果条数（1~20）
     # 匹配方式：二选一，不自动混用
     #   filename   = 按文件名匹配（候选关键词搜索 → 用搜索结果反推歌名/歌手）
-    #   fingerprint= 按音频指纹识别（fpcalc → AcoustID → 回查 QQ，需 qqmusic 插件）
+    #   fingerprint= 按音频指纹识别（fpcalc → AcoustID → 交给支持指纹的数据源回查；
+    #              需 AcoustID Key + 至少一个支持指纹识别的数据源插件）
     "matching_mode": "filename",
     "acoustid_key": "",              # AcoustID API key（安装向导可配，免费注册 https://acoustid.org/new-application）
     # 用户插件目录（安装向导必填；默认应用数据目录 plugins/）

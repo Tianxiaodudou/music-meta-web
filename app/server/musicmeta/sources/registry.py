@@ -65,6 +65,15 @@ def list_sources() -> List[str]:
     return sorted(_REGISTRY)
 
 
+def fingerprint_sources() -> List[str]:
+    """列出支持音频指纹识别的源名称（实现了 recognize_by_fingerprint 的插件）。"""
+    _load_builtins()
+    return sorted(
+        name for name, factory in _REGISTRY.items()
+        if callable(getattr(factory, "recognize_by_fingerprint", None))
+    )
+
+
 def discover_plugins() -> List[str]:
     """扫描插件目录并导入所有插件模块，返回成功加载的模块名。
 

@@ -715,26 +715,46 @@ class Scraper(threading.Thread):
         mode = cfg.get("matching_mode", "filename")
 
         if mode == "fingerprint":
-            # 指纹模式：只用音频指纹识别（需 AcoustID Key + qqmusic 插件）
+            # 指纹模式：只用音频指纹识别（需 AcoustID Key + 支持指纹识别的数据源）
             key = cfg.get("acoustid_key", "").strip()
             if not key:
                 db.update_task_status(
                     path, "manual_pending",
                     error="指纹模式未配置 AcoustID Key（配置页填写）")
                 return
-            try:
-                qq = get_source("qqmusic",
-                                min_interval=float(cfg.get("min_interval", "0.3")))
-            except Exception:
+            # 不绑定具体插件：勾选的数据源里，凡是实现了 recognize_by_fingerprint
+            # 的都能用来做指纹识别（内置为 qqmusic，第三方插件同样可以支持）
+            fp_sources = [s for s in sources
+                          if callable(getattr(s, "recognize_by_fingerprint", None))]
+            if not fp_sources:
+                picked = "、".join(str(getattr(s, "name", "") or "?")
+                                   for s in sources) or "未勾选任何数据源"
                 db.update_task_status(
                     path, "manual_pending",
-                    error="指纹识别需要 qqmusic 插件（请安装数据源 qqmusic.py 后重启）")
+                    error=f"当前勾选的数据源（{picked}）不支持音频指纹识别，"
+                          "无法使用指纹模式；请改用「按文件名匹配」，"
+                          "或勾选支持音频指纹识别的数据源插件")
                 return
-            try:
-                metas = qq.recognize_by_fingerprint(path, key)
-            except Exception as exc:  # noqa: BLE001
-                db.update_task_status(path, "manual_pending",
-                                      error=f"指纹识别失败: {exc}")
+            seen_fp = set()
+            fp_errors = []
+            for src in fp_sources:
+                try:
+                    found = src.recognize_by_fingerprint(path, key) or []
+                except Exception as exc:  # noqa: BLE001
+                    fp_errors.append(f"{getattr(src, 'name', '?')}: {exc}")
+                    continue
+                for meta in found:
+                    if not getattr(meta, "source", ""):
+                        meta.source = getattr(src, "name", "")
+                    sid = (meta.source, meta.song_id)
+                    if meta.song_id and sid in seen_fp:
+                        continue
+                    seen_fp.add(sid)
+                    metas.append(meta)
+            if not metas and fp_errors:
+                db.update_task_status(
+                    path, "manual_pending",
+                    error="指纹识别失败: " + "；".join(fp_errors))
                 return
         else:
             # 文件名模式：第 1~4 步全在 match_file 里完成
