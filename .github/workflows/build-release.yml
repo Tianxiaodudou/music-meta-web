@@ -76,6 +76,20 @@ jobs:
       - name: Vendor runtime wheels (x86_64 + aarch64)
         run: bash scripts/vendor-wheels.sh
 
+      # ---- 音频指纹要用的 fpcalc（Chromaprint 官方静态版）----
+      # 以前这块靠用户在 NAS 上 apt 装 libchromaprint-tools，装不上指纹模式就废；
+      # 现在构建时把官方双架构可执行文件打进 app/server/vendor/bin/。
+      - name: Vendor fpcalc binaries (x86_64 + aarch64)
+        run: bash scripts/vendor-fpcalc.sh
+
+      # sha256 写死在脚本里，上游资产换掉/下载被截断都会在这里失败
+      - name: Verify bundled fpcalc (both arches + pinned checksum)
+        run: python3 scripts/verify-fpcalc-set.py app/server/vendor/bin
+
+      # 校验脚本自身的自检：合成文件必须能被拦住（真实目录那份也一并复核）
+      - name: Test fpcalc verify script (synthetic fixtures)
+        run: python3 scripts/tests/test_fpcalc_verify.py
+
       # 应用自身的测试会用 ffmpeg 造样本音频；镜像里不保证有，显式装上。
       - name: Install test prerequisites (ffmpeg for sample audio)
         run: |

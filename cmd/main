@@ -20,6 +20,9 @@ REQ_FILE="${DEST_DIR}/server/requirements.txt"
 # 依赖轮子随 fpk 内置（CI 打包时下载，见 scripts/vendor-wheels.sh），
 # 正常路径下装完即用、全程不联网。
 WHEELS_DIR="${DEST_DIR}/server/vendor/wheels"
+# 音频指纹要用的 fpcalc 也随包内置（CI 打包时下载，见 scripts/vendor-fpcalc.sh），
+# 所以 NAS 上不需要用户自己 apt 装 libchromaprint-tools。
+FPCALC_DIR="${DEST_DIR}/server/vendor/bin"
 LOCK_FILE="${DEST_DIR}/server/requirements.lock.txt"
 DEPS_CHECK="import fastapi, uvicorn, mutagen, multipart"
 
@@ -101,6 +104,13 @@ prepare_venv() {
     return 1
 }
 
+ensure_fpcalc_exec() {
+    # 内置 fpcalc 的执行位兜底：打包/解包环节若把 +x 丢掉，这里补回来。
+    # 缺目录就静默返回，真正的缺失由 fingerprint.py 自己报错，不在这里拦启动。
+    [ -d "${FPCALC_DIR}" ] || return 0
+    chmod +x "${FPCALC_DIR}"/fpcalc-* 2>/dev/null || true
+}
+
 check_process() {
     local pid=$1
     if kill -0 "${pid}" 2>/dev/null; then
@@ -131,6 +141,12 @@ start_process() {
     if ! prepare_venv; then
         log_msg "依赖未就绪，放弃启动（详见上方依赖安装日志）"
         return 1
+    fi
+    # 内置 fpcalc（音频指纹）：补执行位；目录缺失只记一行提示，不影响启动
+    if [ -d "${FPCALC_DIR}" ]; then
+        ensure_fpcalc_exec
+    else
+        log_msg "提示：包内未找到 fpcalc（${FPCALC_DIR}），指纹模式将回退到系统 fpcalc"
     fi
     log_msg "启动应用 (socket=${SOCK_FILE}) ..."
     # 安装向导值（wizard/install、wizard/config）→ 同名环境变量 → 转发给 run_server：

@@ -7,7 +7,8 @@
 #   2) 两种架构的编译扩展轮子都在（pydantic_core 的 x86_64 + aarch64）；
 #   3) 包内 manifest 的 version / changelog 字段确实是我们要的值
 #      —— changelog 是 CI 注入的，这里回读一次，证明 fnpack 接受了这个值；
-#   4) 包内 manifest.checksum 与 app.tgz 的 md5 相符（载荷完整性）。
+#   4) 包内 manifest.checksum 与 app.tgz 的 md5 相符（载荷完整性）；
+#   5) 包内还带着音频指纹要用的 fpcalc（x86_64 + aarch64，sha256 标定）。
 # 用法：verify-fpk-payload.sh <fpk> <version> [wheels-dir]
 # ============================================================
 set -euo pipefail
@@ -15,6 +16,7 @@ set -euo pipefail
 FPK="${1:?用法: verify-fpk-payload.sh <fpk> <version> [wheels-dir]}"
 VERSION="${2:?缺少版本号}"
 WHEELS="${3:-}"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 [ -f "$FPK" ] || { echo "✗ fpk 不存在：$FPK" >&2; exit 1; }
 
@@ -66,6 +68,17 @@ else
 fi
 
 echo
+echo "== 1b) 内置 fpcalc（音频指纹要用的 Chromaprint 工具）"
+FPCALC_DIR="$WORK/x/server/vendor/bin"
+if [ ! -d "$FPCALC_DIR" ]; then
+  fail "包内没有 server/vendor/bin/ —— 指纹模式会退化成「找不到 fpcalc」"
+else
+  # 复用构建期的校验脚本：文件齐不齐、ELF 架构对不对、sha256 是不是标定的那份
+  python3 "$HERE/verify-fpcalc-set.py" "$FPCALC_DIR" \
+    || fail "包内 fpcalc 未通过校验（原因见上面 ✗）"
+fi
+
+echo
 echo "== 2) 包内 manifest 字段"
 MV="$(grep -E '^version[[:space:]]*=' "$WORK/manifest" | head -1 | sed -E 's/^version[[:space:]]*=[[:space:]]*//' | tr -d ' \r')"
 [ "$MV" = "$VERSION" ] && ok "version = $MV" || fail "version 不符：包内 $MV ≠ 期望 $VERSION"
@@ -101,4 +114,4 @@ if [ "$FAIL" -ne 0 ]; then
   echo "✗ 成品校验未通过（上面有 ✗ 项）"
   exit 1
 fi
-echo "✓ 成品校验通过：依赖已内置、双架构齐备、manifest 字段正确"
+echo "✓ 成品校验通过：依赖已内置、双架构齐备、指纹工具已内置、manifest 字段正确"
